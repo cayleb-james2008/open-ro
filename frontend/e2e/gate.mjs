@@ -236,14 +236,15 @@ try {
   });
   const sheetIds = Array.isArray(uiKitApiRes.pr?.sheets) ? uiKitApiRes.pr.sheets.map((x) => x.id) : [];
   check(
-    "GET /api/ui-kit/presets returns 9 rules, 4 layouts, 5 skins, 5 sheets (incl. card_borders_sheet & panels_sheet)",
+    "GET /api/ui-kit/presets returns 10 rules, 4 layouts, 6 skins, 6 sheets (incl. anime-pop-dark, cartoon_icons_sheet, card_borders_sheet & panels_sheet)",
     uiKitApiRes.pr?.ok === true &&
-      uiKitApiRes.pr?.craft_rules?.length === 9 &&
+      uiKitApiRes.pr?.craft_rules?.length === 10 &&
       uiKitApiRes.pr?.layouts?.length === 4 &&
-      uiKitApiRes.pr?.skins?.length === 5 &&
-      uiKitApiRes.pr?.sheets?.length === 5 &&
+      uiKitApiRes.pr?.skins?.length === 6 &&
+      uiKitApiRes.pr?.sheets?.length === 6 &&
       sheetIds.includes("card_borders_sheet") &&
-      sheetIds.includes("panels_sheet"),
+      sheetIds.includes("panels_sheet") &&
+      sheetIds.includes("cartoon_icons_sheet"),
     JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length, sheetIds }),
   );
   check(

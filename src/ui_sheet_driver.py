@@ -746,7 +746,7 @@ def do_render_ui_sheet(req):
                 yy = y0 + (y1 - y0) * (k + 2) // 10
                 d.line([(x0 + 48, yy), (x1 - 48, yy)], fill=lerp_col(top, bot, 0.18 + 0.08 * (k % 2)), width=2)
 
-        # (0,0) modal_glass: jet-black obsidian glass + thin neon-gradient outer rim glow
+        # (0,0) modal_glass: jet-black obsidian/dot-matrix glass + thin neon-gradient outer rim glow
         box = cell_box(0, 0, 880, 550)
         glossy_plate(box, 44, obsidian_hi, obsidian, accent, 5, sheen=False)
         x0, y0, x1, y1 = box
@@ -754,25 +754,11 @@ def do_render_ui_sheet(req):
         d.rounded_rectangle((x0 + 18, y0 + 18, x1 - 18, y1 - 18), radius=30, outline=lerp_col(crest_trim, obsidian, 0.55), width=2)
         d.line([(x0 + 80, y0 + 38), (x1 - 80, y0 + 38)], fill=lerp_col(obsidian_hi, white, 0.35), width=3)
 
-        # (1,0) title_ribbon: breaking-out diagonal slash-crest banner + radiant geometric flare (original)
-        cx = cw
-        mx, my = cx + cw // 2, ch // 2
-        bx0, bx1 = cx + 60, cx + cw - 60
-        ribbon = [(bx0 + 80, my - 115), (bx1, my - 115), (bx1 - 80, my + 115), (bx0, my + 115)]
-        d.polygon(ribbon, fill=crest_fill, outline=stroke)
-        inner = [(bx0 + 108, my - 90), (bx1 - 30, my - 90), (bx1 - 102, my + 90), (bx0 + 36, my + 90)]
-        d.polygon(inner, fill=lerp_col(crest_fill, accent, 0.4), outline=crest_trim)
-        d.line(ribbon + [ribbon[0]], fill=crest_trim, width=8)
-        d.polygon([(bx0 + 150, my - 78), (bx1 - 40, my - 78), (bx1 - 52, my - 50), (bx0 + 138, my - 50)], fill=lerp_col(crest_fill, white, 0.3))
-        fx, fy = bx0 + 128, my
-        for k in range(3):
-            off = 26 + k * 34
-            d.polygon([(fx - off - 22, fy - 86 + k * 8), (fx - off + 18, fy), (fx - off - 22, fy + 86 - k * 8), (fx - off - 4, fy)], fill=lerp_col(crest_trim, accent, k / 2.0), outline=stroke)
-        diamond = [(fx, fy - 70), (fx + 46, fy), (fx, fy + 70), (fx - 46, fy)]
-        d.polygon(diamond, fill=accent, outline=stroke)
-        d.line(diamond + [diamond[0]], fill=crest_trim, width=5)
+        # (1,0) title_ribbon: clean glossy top-grossing gradient pill header bar (zero metallic bevel spikes)
+        box = cell_box(1, 0, 880, 230)
+        glossy_plate(box, 36, crest_trim, crest_fill, accent, 6, sheen=True)
 
-        # (2,0) tab_active: brushed metallic gold segmented filter tab plate
+        # (2,0) tab_active: glossy gradient segmented filter tab plate
         box = cell_box(2, 0, 840, 315)
         glossy_plate(box, 30, gold_hi, gold_lo, (254, 243, 199, 255), 6)
         brushed_lines(box, gold_hi, gold_lo)
@@ -800,6 +786,78 @@ def do_render_ui_sheet(req):
         d.line([(x0 + 28, y0 + 64), (x0 + 28, y1 - 64)], fill=crest_trim, width=10)
         d.rounded_rectangle((x0 + 18, y0 + 18, x1 - 18, y1 - 18), radius=20, outline=lerp_col(accent, surface, 0.5), width=2)
 
+        out_img = canvas.resize((w, h), Image.Resampling.LANCZOS)
+    elif sheet == "cartoon_icons_sheet":
+        # v1.36.0 Pop-Anime 4x3 Cartoon Icons Sheet procedural fallback (12 thick-ink cartoon icons).
+        w, h = 2048, 1536
+        cols, rows = 4, 3
+        cw, ch = (w * ss) // cols, (h * ss) // rows
+        canvas = Image.new("RGBA", (w * ss, h * ss), chroma)
+        d = ImageDraw.Draw(canvas)
+        ink = (9, 11, 16, 255)
+        sw = 20
+        white = (255, 255, 255, 255)
+        for idx in range(12):
+            r, c = divmod(idx, cols)
+            cx, cy = c * cw, r * ch
+            mx, my = cx + cw // 2, cy + ch // 2
+            if idx == 0:  # icon_backpack
+                d.rounded_rectangle((mx - 170, my - 140, mx + 170, my + 180), radius=54, fill=(217, 119, 6, 255), outline=ink, width=sw)
+                d.rounded_rectangle((mx - 150, my - 140, mx + 150, my + 15), radius=44, fill=(245, 158, 11, 255), outline=ink, width=sw)
+                d.rounded_rectangle((mx - 90, my + 40, mx + 90, my + 150), radius=24, fill=(180, 83, 9, 255), outline=ink, width=12)
+                d.ellipse((mx - 110, my - 105, mx - 50, my - 55), fill=white)
+            elif idx == 1:  # icon_summon
+                pts = [(mx, my - 210), (mx + 145, my), (mx, my + 210), (mx - 145, my)]
+                d.polygon(pts, fill=(139, 92, 246, 255), outline=ink)
+                d.line(pts + [pts[0]], fill=ink, width=sw)
+                d.polygon([(mx, my - 135), (mx + 80, my - 10), (mx, my + 100)], fill=(56, 189, 248, 255))
+            elif idx == 2:  # icon_swords
+                d.line([(mx - 170, my + 170), (mx + 170, my - 170)], fill=ink, width=64)
+                d.line([(mx - 165, my + 165), (mx + 165, my - 165)], fill=(56, 189, 248, 255), width=36)
+                d.line([(mx - 170, my - 170), (mx + 170, my + 170)], fill=ink, width=64)
+                d.line([(mx - 165, my - 165), (mx + 165, my + 165)], fill=(250, 204, 21, 255), width=36)
+                d.ellipse((mx - 48, my - 48, mx + 48, my + 48), fill=white, outline=ink, width=14)
+            elif idx == 3:  # icon_shop
+                d.rounded_rectangle((mx - 160, my - 50, mx + 160, my + 175), radius=52, fill=(34, 197, 94, 255), outline=ink, width=sw)
+                d.polygon([(mx - 90, my - 175), (mx + 90, my - 175), (mx + 125, my - 50), (mx - 125, my - 50)], fill=(250, 204, 21, 255), outline=ink)
+                d.line([(mx - 90, my - 175), (mx + 90, my - 175), (mx + 125, my - 50), (mx - 125, my - 50), (mx - 90, my - 175)], fill=ink, width=sw)
+            elif idx == 4:  # icon_coin
+                d.rounded_rectangle((mx - 190, my - 115, mx + 190, my + 115), radius=28, fill=(34, 197, 94, 255), outline=ink, width=sw)
+                d.rounded_rectangle((mx - 150, my - 75, mx + 150, my + 75), radius=18, fill=(134, 239, 172, 255), outline=ink, width=10)
+                d.ellipse((mx - 65, my - 65, mx + 65, my + 65), fill=(250, 204, 21, 255), outline=ink, width=12)
+            elif idx == 5:  # icon_gem
+                pts = [(mx - 115, my - 145), (mx + 115, my - 145), (mx + 195, my - 15), (mx, my + 190), (mx - 195, my - 15)]
+                d.polygon(pts, fill=(236, 72, 153, 255), outline=ink)
+                d.line(pts + [pts[0]], fill=ink, width=sw)
+                d.polygon([(mx - 70, my - 120), (mx + 30, my - 120), (mx - 20, my - 25)], fill=white)
+            elif idx == 6:  # icon_clover
+                for dx, dy in [(-75, -75), (75, -75), (-75, 75), (75, 75)]:
+                    d.ellipse((mx + dx - 86, my + dy - 86, mx + dx + 86, my + dy + 86), fill=(124, 255, 0, 255), outline=ink, width=sw)
+                d.ellipse((mx - 38, my - 38, mx + 38, my + 38), fill=(34, 197, 94, 255))
+            elif idx == 7:  # icon_potion
+                d.rounded_rectangle((mx - 140, my - 55, mx + 140, my + 185), radius=70, fill=(56, 189, 248, 255), outline=ink, width=sw)
+                d.rounded_rectangle((mx - 58, my - 155, mx + 58, my - 45), radius=14, fill=(217, 119, 6, 255), outline=ink, width=16)
+                d.ellipse((mx - 90, my - 10, mx - 25, my + 55), fill=white)
+            elif idx == 8:  # icon_crown
+                pts = [(mx - 180, my + 130), (mx - 195, my - 120), (mx - 85, my + 10), (mx, my - 165), (mx + 85, my + 10), (mx + 195, my - 120), (mx + 180, my + 130)]
+                d.polygon(pts, fill=(250, 204, 21, 255), outline=ink)
+                d.line(pts + [pts[0]], fill=ink, width=sw)
+                d.ellipse((mx - 34, my + 24, mx + 34, my + 92), fill=(56, 189, 248, 255), outline=ink, width=10)
+            elif idx == 9:  # icon_scroll
+                d.rounded_rectangle((mx - 155, my - 150, mx + 155, my + 150), radius=30, fill=(254, 243, 199, 255), outline=ink, width=sw)
+                d.ellipse((mx - 55, my + 15, mx + 55, my + 125), fill=(239, 68, 68, 255), outline=ink, width=14)
+                d.line([(mx - 95, my - 70), (mx + 95, my - 70)], fill=ink, width=16)
+            elif idx == 10:  # icon_portal
+                d.ellipse((mx - 190, my - 190, mx + 190, my + 190), fill=(37, 99, 235, 255), outline=ink, width=sw)
+                d.ellipse((mx - 120, my - 120, mx + 120, my + 120), fill=(56, 189, 248, 255), outline=ink, width=14)
+                d.ellipse((mx - 55, my - 55, mx + 55, my + 55), fill=white)
+            else:  # icon_gear
+                for k in range(6):
+                    ang = k * math.pi / 3
+                    gx, gy = mx + int(math.cos(ang) * 150), my + int(math.sin(ang) * 150)
+                    d.ellipse((gx - 50, gy - 50, gx + 50, gy + 50), fill=(148, 163, 184, 255), outline=ink, width=16)
+                d.ellipse((mx - 140, my - 140, mx + 140, my + 140), fill=(203, 213, 225, 255), outline=ink, width=sw)
+                d.ellipse((mx - 58, my - 58, mx + 58, my + 58), fill=(56, 189, 248, 255), outline=ink, width=14)
         out_img = canvas.resize((w, h), Image.Resampling.LANCZOS)
     else:
         fail(f"Unknown UI sheet recipe '{sheet}'.")

@@ -175,6 +175,14 @@ pub fn ui_craft_rules() -> Vec<UiCraftRule> {
             roblox_binding: "Modal = modal_glass ImageLabel + title_ribbon header + UIGridLayout (CellSize ~ 96-128px, 3-6 columns) master pane + inspector_card detail pane + btn_emerald/btn_gold CTA row",
             anti_pattern: "Dead single-card voids floating in an empty modal, or bare outline-only stacks of thin bordered boxes.",
         },
+        UiCraftRule {
+            id: "modern-roblox-pop-gradients",
+            number: 10,
+            title: "Top-Grossing Roblox Pop-Anime Gradients & Bold-Ink Icons",
+            rule: "Match top-grossing anime Roblox UI with matte dark dot-matrix panels, vibrant vertical UIGradient header ribbons and pills (electric lime, sky cyan, gold, crimson), thick 2.5-3px black UIStroke comic outlines, breaking-out cartoon icons (cartoon_icons_sheet), colorful icon+label left rail tabs, glossy red [X] buttons, and frameless bold-outlined floating HUD counters + gradient pity bars.",
+            roblox_binding: "Skin 'anime-pop-dark' + cartoon_icons_sheet + UIGradient headers/pills + UIStroke (Thickness 2-3px, #05070B) + Blender FileMesh sanctum props/floor via blender_build_map",
+            anti_pattern: "Heavy medieval metallic bevel plates, pointy diamond heraldic spikes, or flat block-part arenas.",
+        },
     ]
 }
 
@@ -391,6 +399,42 @@ pub fn visual_skins() -> Vec<UiSkinSpec> {
                 danger_fg: "#FFFFFF",
                 crest_fill: "#E2E8F0",
                 crest_trim: "#1E293B",
+            },
+        },
+        UiSkinSpec {
+            id: "anime-pop-dark",
+            name: "Anime Pop Dark",
+            mood: "top-grossing Roblox anime game UI, matte dark dot-matrix surfaces, vibrant electric-lime & azure gradient pills, thick black comic ink outlines, cel-shaded gloss",
+            chroma_key: "#FF00FF",
+            dark: SkinTokens {
+                bg: "#0B0D14",
+                surface: "#13151C",
+                surface_elevated: "#1B1F2B",
+                text: "#F8FAFC",
+                text_muted: "#CBD5E1",
+                accent: "#7CFF00",
+                accent_fg: "#090B10",
+                rim: "#2DD4BF",
+                stroke_dark: "#05070B",
+                danger: "#B91C1C",
+                danger_fg: "#FFFFFF",
+                crest_fill: "#22C55E",
+                crest_trim: "#7CFF00",
+            },
+            light: SkinTokens {
+                bg: "#E2E8F0",
+                surface: "#F8FAFC",
+                surface_elevated: "#FFFFFF",
+                text: "#090B10",
+                text_muted: "#334155",
+                accent: "#65E600",
+                accent_fg: "#090B10",
+                rim: "#0EA5E9",
+                stroke_dark: "#090B10",
+                danger: "#B91C1C",
+                danger_fg: "#FFFFFF",
+                crest_fill: "#DCFCE7",
+                crest_trim: "#15803D",
             },
         },
     ]
@@ -680,6 +724,26 @@ pub fn sheet_recipes() -> Vec<UiSheetRecipe> {
                 },
             ],
         },
+        UiSheetRecipe {
+            id: "cartoon_icons_sheet",
+            name: "Pop-Anime Cartoon Icon Pack (12 Chunky Outlined Icons)",
+            cols: 4,
+            rows: 3,
+            items: vec![
+                SheetItemSpec { name: "icon_backpack", row: 0, col: 0, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "chunky tan and brown leather adventure backpack with brass buckles and glossy highlight, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_summon", row: 0, col: 1, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "radiant violet-cyan star portal crystal with swirling energy spark, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_swords", row: 0, col: 2, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "crossed silver and azure anime broadswords with golden hilts and impact flash, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_shop", row: 0, col: 3, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "vibrant emerald and gold potion shop pouch with glossy ribbon tie, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_coin", row: 1, col: 0, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "chunky bright green-emerald cash bill stack and shiny gold emblem, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_gem", row: 1, col: 1, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "vivid magenta-violet faceted diamond crystal gem with crisp white specular facet, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_clover", row: 1, col: 2, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "bright neon lime-green glossy four-leaf luck clover with gold sparkle dots, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_potion", row: 1, col: 3, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "glowing sky-blue wing-emblem speed potion bottle with cork stopper and bubbles, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_crown", row: 2, col: 0, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "chunky bright gold royal crown with sapphire center jewel, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_scroll", row: 2, col: 1, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "warm parchment quest scroll bound with crimson wax seal and gold rod caps, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_portal", row: 2, col: 2, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "electric cyan swirling dungeon vortex ring over dark stone base, thick black comic ink outline" },
+                SheetItemSpec { name: "icon_gear", row: 2, col: 3, is_9slice: false, cutout_interior: false, target_size: [256, 256], prompt_desc: "sleek cool silver steel settings cogwheel with azure center hub, thick black comic ink outline" },
+            ],
+        },
     ]
 }
 
@@ -728,13 +792,19 @@ pub fn build_ui_sheet_prompt(skin_id: &str, sheet_id: &str) -> Result<String, St
     } else {
         skin.chroma_key
     };
+    let style_clause = if skin.id == "anime-pop-dark" || recipe.id == "cartoon_icons_sheet" {
+        "clean modern top-grossing Roblox game UI flat rounded matte dark dot-matrix panels (#13151C) and vibrant glossy cel-shaded vertical gradient bars and chunky icons with thick crisp #000000 comic ink outlines, ZERO medieval bevel shields, ZERO metal spikes, ZERO gothic stone frames"
+    } else {
+        "razor-sharp crisp vector-painted bevels and cel-shaded highlights"
+    };
     let raw = format!(
-        "2D game UI sprite sheet in {} aesthetic ({}), cleanly arranged in an evenly spaced {}x{} grid with generous gutters on a flat uniform {} chroma-key background for clean alpha cutout, razor-sharp crisp vector-painted bevels and cel-shaded highlights, containing: {}, strictly zero text, no letters, no numbers, no watermarks, no logos, original architectural geometry with zero anime franchise likenesses and zero crimson star ribbons",
+        "2D game UI sprite sheet in {} aesthetic ({}), cleanly arranged in an evenly spaced {}x{} grid with generous gutters on a flat uniform {} chroma-key background for clean alpha cutout, {}, containing: {}, strictly zero text, no letters, no numbers, no watermarks, no logos, original geometric shapes with zero anime franchise likenesses and zero crimson star ribbons",
         skin.name,
         skin.mood,
         recipe.cols,
         recipe.rows,
         chroma,
+        style_clause,
         joined
     );
     Ok(raw
@@ -856,7 +926,7 @@ pub fn presets_json() -> Value {
 }
 
 pub fn prompt_guidance() -> &'static str {
-    "UI Craft (9 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (including card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, original crests, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* 9-slices + Anime Nexus RNG X perimeter icon docks + bottom roll/team hotbar (NEVER crude SaaS bordered boxes). Image-Gen-First: generate chrome_sheet, panels_sheet (modal_glass, title_ribbon, tab_active, tab_inactive, btn_emerald, btn_gold, dock_tile, inspector_card), icons_sheet, and card_borders_sheet via ui_kit_generate {\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}; bind >=70% of modals/headers/tabs/buttons/progress bars/dock tiles to sliced PNGs (ScaleType.Slice/Stretch + SliceCenter) and set BackgroundTransparency = 1 on every slice-backed container; build dense split-pane Master-Detail or multi-column UIGridLayout tile grids (zero dead single-card voids, zero bare outline stacks); then verify live with studio_verify_ui_craft (ui_images_bound >= 6, slice_chrome_active >= 4, opaque_parent_violations == 0, panel_coverage_pct >= 65)."
+    "UI Craft (10 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (chrome_sheet, panels_sheet, icons_sheet, cartoon_icons_sheet, card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* + Anime Nexus RNG X perimeter icon docks + bottom hotbar, using skin 'anime-pop-dark' matte dark dot-matrix panels, vibrant vertical UIGradient headers/pills, chunky #000000-outlined cartoon_icons_sheet icons, frameless glowing HUD counters/pity bars, and Blender 3D maps via blender_build_map (NEVER heavy medieval metallic shields or dated medieval bevel chrome). Image-Gen-First: generate cartoon_icons_sheet, panels_sheet, chrome_sheet, and card_borders_sheet via ui_kit_generate {\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}; bind >=70% to sliced PNGs with BackgroundTransparency = 1 on slice-backed parents; verify via studio_verify_ui_craft."
 }
 
 /// Generate (or slice an existing) UI Kit asset sheet + build the matching mixable ScreenDoc.

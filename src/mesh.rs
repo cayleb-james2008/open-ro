@@ -409,13 +409,17 @@ fn mime_for_mesh_ext(filename: &str) -> Result<&'static str, String> {
     let lower = filename.to_ascii_lowercase();
     if lower.ends_with(".obj") {
         Ok("text/plain; charset=utf-8")
+    } else if lower.ends_with(".mesh") {
+        Ok("application/octet-stream")
+    } else if lower.ends_with(".glb") {
+        Ok("model/gltf-binary")
     } else if lower.ends_with(".png") {
         Ok("image/png")
     } else if lower.ends_with(".json") {
         Ok("application/json; charset=utf-8")
     } else {
         Err(format!(
-            "mesh asset '{filename}' must end with .obj, .png, or .json"
+            "mesh asset '{filename}' must end with .mesh, .obj, .glb, .png, or .json"
         ))
     }
 }
@@ -636,6 +640,26 @@ fn check_obj_has_uvs(path: &Path, label: &str) -> Result<(), String> {
     if !has_v || !has_vt {
         return Err(format!(
             "exported OBJ for {label} is missing vertices or UV coordinates"
+        ));
+    }
+    Ok(())
+}
+
+fn check_roblox_mesh_v2(path: &Path, label: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {label}: {e}"))?;
+    if bytes.len() < 25 || !bytes.starts_with(b"version 2.00\n") {
+        return Err(format!(
+            "exported Roblox binary .mesh for {label} is invalid (missing version 2.00 header)"
+        ));
+    }
+    Ok(())
+}
+
+fn check_glb_file(path: &Path, label: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {label}: {e}"))?;
+    if bytes.len() < 12 || !bytes.starts_with(b"glTF") {
+        return Err(format!(
+            "exported GLB for {label} is invalid (missing glTF magic header)"
         ));
     }
     Ok(())
@@ -865,12 +889,28 @@ pub fn generate(
         .get("mesh")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let roblox_mesh_file = manifest
+        .get("roblox_mesh")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let glb_file = manifest
+        .get("glb")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let texture_file = manifest
         .get("texture")
         .and_then(|v| v.as_str())
         .map(String::from);
     if let Some(ref f) = obj_file {
         check_obj_has_uvs(&stage_dir.join(f), f)?;
+        files_to_commit.push(f.clone());
+    }
+    if let Some(ref f) = roblox_mesh_file {
+        check_roblox_mesh_v2(&stage_dir.join(f), f)?;
+        files_to_commit.push(f.clone());
+    }
+    if let Some(ref f) = glb_file {
+        check_glb_file(&stage_dir.join(f), f)?;
         files_to_commit.push(f.clone());
     }
     if let Some(ref f) = texture_file {
@@ -882,12 +922,28 @@ pub fn generate(
         .get("glow_mesh")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let glow_roblox_mesh_file = manifest
+        .get("glow_roblox_mesh")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let glow_glb_file = manifest
+        .get("glow_glb")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let glow_texture_file = manifest
         .get("glow_texture")
         .and_then(|v| v.as_str())
         .map(String::from);
     if let Some(ref f) = glow_obj_file {
         check_obj_has_uvs(&stage_dir.join(f), f)?;
+        files_to_commit.push(f.clone());
+    }
+    if let Some(ref f) = glow_roblox_mesh_file {
+        check_roblox_mesh_v2(&stage_dir.join(f), f)?;
+        files_to_commit.push(f.clone());
+    }
+    if let Some(ref f) = glow_glb_file {
+        check_glb_file(&stage_dir.join(f), f)?;
         files_to_commit.push(f.clone());
     }
     if let Some(ref f) = glow_texture_file {
@@ -940,7 +996,7 @@ pub fn generate(
     let first_preview_url = preview_files.first().map(|f| format!("{url_prefix}/{f}"));
     let manifest_file = format!("{slug}.manifest.json");
 
-    Ok(json!({
+    let mut out = json!({
         "ok": true,
         "mode": mode,
         "name": slug,
@@ -979,7 +1035,22 @@ pub fn generate(
         "preview_url": first_preview_url,
         "manifest": manifest,
         "elapsed_ms": started.elapsed().as_millis() as u64,
-    }))
+    });
+    if let Some(m) = out.as_object_mut() {
+        m.insert("roblox_mesh_file".into(), json!(roblox_mesh_file));
+        m.insert("roblox_mesh_path".into(), json!(mk_path(&roblox_mesh_file)));
+        m.insert("roblox_mesh_url".into(), json!(mk_url(&roblox_mesh_file)));
+        m.insert("glb_file".into(), json!(glb_file));
+        m.insert("glb_path".into(), json!(mk_path(&glb_file)));
+        m.insert("glb_url".into(), json!(mk_url(&glb_file)));
+        m.insert("glow_roblox_mesh_file".into(), json!(glow_roblox_mesh_file));
+        m.insert("glow_roblox_mesh_path".into(), json!(mk_path(&glow_roblox_mesh_file)));
+        m.insert("glow_roblox_mesh_url".into(), json!(mk_url(&glow_roblox_mesh_file)));
+        m.insert("glow_glb_file".into(), json!(glow_glb_file));
+        m.insert("glow_glb_path".into(), json!(mk_path(&glow_glb_file)));
+        m.insert("glow_glb_url".into(), json!(mk_url(&glow_glb_file)));
+    }
+    Ok(out)
 }
 
 /// Generate a Blender mesh via `generate(...)` and, when `project_root` is provided,
@@ -999,7 +1070,17 @@ pub fn generate_for_project(
     std::fs::create_dir_all(&proj_meshes)
         .map_err(|e| format!("create project meshes dir: {e}"))?;
     let mut copied = Vec::new();
-    for key in ["obj_path", "texture_path", "glow_obj_path", "glow_texture_path", "manifest_path"] {
+    for key in [
+        "obj_path",
+        "roblox_mesh_path",
+        "glb_path",
+        "texture_path",
+        "glow_obj_path",
+        "glow_roblox_mesh_path",
+        "glow_glb_path",
+        "glow_texture_path",
+        "manifest_path",
+    ] {
         if let Some(src_str) = res.get(key).and_then(Value::as_str) {
             let src = Path::new(src_str);
             if let Some(fname) = src.file_name() {
@@ -1015,7 +1096,12 @@ pub fn generate_for_project(
     if let (Some(slug), Some(manifest)) = (res.get("name").and_then(Value::as_str), res.get("manifest")) {
         let _ = merge_dir_manifest(&proj_meshes, slug, manifest);
     }
-    let codegen = crate::opencloud::assets_codegen(root, &json!({})).ok();
+    let cg_args = if root.join("src/shared/content/AssetIds.luau").is_file() {
+        json!({ "out": "src/shared/content/AssetIds.luau" })
+    } else {
+        json!({})
+    };
+    let codegen = crate::opencloud::assets_codegen(root, &cg_args).ok();
     if let Some(obj) = res.as_object_mut() {
         obj.insert("project_files".into(), json!(copied));
         obj.insert("project_manifest".into(), json!("assets/meshes/manifest.json"));
@@ -1024,4 +1110,287 @@ pub fn generate_for_project(
         }
     }
     Ok(res)
+}
+
+const ARENA_FLOOR_ARCANE_PY: &str = r##"import math, sys
+from PIL import Image, ImageDraw
+
+out_path = sys.argv[1]
+size = 1024
+img = Image.new("RGBA", (size, size), (14, 24, 68, 255))
+d = ImageDraw.Draw(img)
+
+tile = 128
+for row in range(size // tile):
+    for col in range(size // tile):
+        alt = (row + col) % 2 == 0
+        c = (18, 33, 92, 255) if alt else (11, 21, 64, 255)
+        x0, y0 = col * tile, row * tile
+        d.rectangle((x0, y0, x0 + tile - 1, y0 + tile - 1), fill=c)
+        d.rectangle((x0 + 4, y0 + 4, x0 + tile - 5, y0 + tile - 5), outline=(34, 64, 148, 120), width=2)
+
+# Geometric sapphire-cyan arcane compass & concentric rings (original geometric motifs, zero text)
+cx = cy = size // 2
+for r, col, w in [(470, (44, 118, 232, 200), 6), (446, (56, 189, 248, 220), 4), (310, (56, 189, 248, 235), 5), (170, (99, 230, 255, 240), 4)]:
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), outline=col, width=w)
+
+for idx in range(8):
+    ang = idx * math.pi / 4.0
+    x1 = cx + int(math.cos(ang) * 446)
+    y1 = cy + int(math.sin(ang) * 446)
+    x2 = cx + int(math.cos(ang) * 170)
+    y2 = cy + int(math.sin(ang) * 170)
+    d.line([(x2, y2), (x1, y1)], fill=(56, 189, 248, 165), width=3)
+
+# Corner diamond studs on tile intersections
+for k in range(0, size + 1, tile):
+    for m in range(0, size + 1, tile):
+        pts = [(k, m - 6), (k + 6, m), (k, m + 6), (k - 6, m)]
+        d.polygon(pts, fill=(94, 214, 255, 190))
+
+img.save(out_path, "PNG", optimize=True)
+"##;
+
+fn map_kit_prop_specs(preset: &str) -> Result<Vec<(&'static str, &'static str, &'static str)>, String> {
+    let norm = preset.trim().to_ascii_lowercase().replace('_', "-");
+    if !matches!(norm.as_str(), "arcane-dungeon-sanctum" | "dungeon-sanctum" | "arcane-arena" | "default") {
+        return Err(format!(
+            "unknown Blender map kit preset '{preset}' (supported: arcane-dungeon-sanctum)"
+        ));
+    }
+    Ok(vec![
+        (
+            "dungeon_column",
+            "Sculpted octagonal sapphire-slate dungeon column with stepped plinth, beveled stone rings, ornate capital, and glowing cyan sigil collar",
+            r#"
+stone_mat = make_stone_material((0.12, 0.17, 0.30, 1.0))
+gold_mat = make_metallic_material((0.78, 0.62, 0.24, 1.0), metallic=0.88, roughness=0.28)
+glow_mat = make_glow_material((0.16, 0.78, 1.0, 1.0), strength=4.2)
+
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=3.2, depth=1.6, location=(0, 0, 0.8))
+base1 = bpy.context.active_object; bevel_obj(base1, 0.08, 2); assign_material(base1, stone_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=2.65, depth=1.2, location=(0, 0, 2.2))
+base2 = bpy.context.active_object; bevel_obj(base2, 0.07, 2); assign_material(base2, stone_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=1.95, depth=12.4, location=(0, 0, 9.0))
+shaft = bpy.context.active_object; bevel_obj(shaft, 0.05, 1); assign_material(shaft, stone_mat)
+for z in (3.2, 8.8, 14.2):
+    bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=2.22, depth=0.65, location=(0, 0, z))
+    ring = bpy.context.active_object; bevel_obj(ring, 0.04, 1); assign_material(ring, gold_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=3.15, depth=1.8, location=(0, 0, 16.1))
+cap = bpy.context.active_object; bevel_obj(cap, 0.08, 2); assign_material(cap, stone_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=2.12, depth=0.75, location=(0, 0, 14.95))
+gcol = bpy.context.active_object; gcol['openro_glow'] = True; assign_material(gcol, glow_mat)
+"#,
+        ),
+        (
+            "soul_brazier",
+            "Carved octagonal stone torch brazier with gilded bronze basin rim and glowing crystalline arcane flame core",
+            r#"
+stone_mat = make_stone_material((0.13, 0.18, 0.31, 1.0))
+gold_mat = make_metallic_material((0.84, 0.66, 0.25, 1.0), metallic=0.90, roughness=0.25)
+glow_mat = make_glow_material((0.20, 0.85, 1.0, 1.0), strength=5.0)
+
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=2.1, depth=1.2, location=(0, 0, 0.6))
+ped = bpy.context.active_object; bevel_obj(ped, 0.06, 2); assign_material(ped, stone_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=1.55, depth=2.0, location=(0, 0, 2.2))
+stem = bpy.context.active_object; bevel_obj(stem, 0.05, 1); assign_material(stem, stone_mat)
+bpy.ops.mesh.primitive_cone_add(vertices=8, radius1=1.35, radius2=2.25, depth=1.5, location=(0, 0, 3.85))
+bowl = bpy.context.active_object; bevel_obj(bowl, 0.06, 2); assign_material(bowl, stone_mat)
+bpy.ops.mesh.primitive_torus_add(major_segments=16, minor_segments=8, major_radius=2.15, minor_radius=0.24, location=(0, 0, 4.55))
+rim = bpy.context.active_object; assign_material(rim, gold_mat)
+bpy.ops.mesh.primitive_cone_add(vertices=8, radius1=1.05, radius2=0.08, depth=2.3, location=(0, 0, 5.4))
+flame = bpy.context.active_object; flame['openro_glow'] = True; assign_material(flame, glow_mat)
+"#,
+        ),
+        (
+            "sanctum_arch_gate",
+            "Monumental dungeon sanctum stone arch gate with stepped buttress piers, gilded keystone crest, and glowing portal arc",
+            r#"
+stone_mat = make_stone_material((0.11, 0.16, 0.29, 1.0))
+gold_mat = make_metallic_material((0.82, 0.64, 0.24, 1.0), metallic=0.88, roughness=0.27)
+glow_mat = make_glow_material((0.18, 0.80, 1.0, 1.0), strength=4.5)
+
+for sx in (-8.5, 8.5):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 0, 1.0)); b = bpy.context.active_object
+    b.scale = (5.2, 5.2, 2.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(b, 0.08, 2); assign_material(b, stone_mat)
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 0, 9.0)); p = bpy.context.active_object
+    p.scale = (3.8, 3.8, 14.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(p, 0.07, 2); assign_material(p, stone_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 17.0)); lintel = bpy.context.active_object
+lintel.scale = (23.0, 4.6, 3.2); bpy.ops.object.transform_apply(scale=True); bevel_obj(lintel, 0.09, 2); assign_material(lintel, stone_mat)
+bpy.ops.mesh.primitive_cone_add(vertices=6, radius1=2.2, radius2=0.5, depth=3.2, location=(0, 0, 19.6))
+crest = bpy.context.active_object; bevel_obj(crest, 0.05, 1); assign_material(crest, gold_mat)
+bpy.ops.mesh.primitive_torus_add(major_segments=20, minor_segments=8, major_radius=5.8, minor_radius=0.35, location=(0, 0, 11.2), rotation=(math.pi / 2, 0, 0))
+portal = bpy.context.active_object; portal['openro_glow'] = True; assign_material(portal, glow_mat)
+"#,
+        ),
+        (
+            "summon_altar",
+            "Stepped octagonal summon dais with bronze sigil ring and luminous arcane core pad",
+            r#"
+stone_mat = make_stone_material((0.13, 0.19, 0.34, 1.0))
+gold_mat = make_metallic_material((0.82, 0.65, 0.26, 1.0), metallic=0.88, roughness=0.28)
+glow_mat = make_glow_material((0.24, 0.84, 1.0, 1.0), strength=4.6)
+
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=6.4, depth=0.9, location=(0, 0, 0.45))
+d1 = bpy.context.active_object; bevel_obj(d1, 0.07, 2); assign_material(d1, stone_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=4.8, depth=0.9, location=(0, 0, 1.35))
+d2 = bpy.context.active_object; bevel_obj(d2, 0.06, 2); assign_material(d2, stone_mat)
+bpy.ops.mesh.primitive_torus_add(major_segments=24, minor_segments=8, major_radius=4.1, minor_radius=0.25, location=(0, 0, 1.85))
+ring = bpy.context.active_object; assign_material(ring, gold_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=16, radius=3.4, depth=0.35, location=(0, 0, 1.95))
+core = bpy.context.active_object; core['openro_glow'] = True; assign_material(core, glow_mat)
+"#,
+        ),
+        (
+            "relief_wall_panel",
+            "Architectural fortress relief stone wall bay with twin buttress ribs, beveled cornice, and vertical arcane light conduits",
+            r#"
+stone_mat = make_stone_material((0.10, 0.15, 0.27, 1.0))
+gold_mat = make_metallic_material((0.76, 0.60, 0.24, 1.0), metallic=0.85, roughness=0.30)
+glow_mat = make_glow_material((0.16, 0.76, 1.0, 1.0), strength=4.0)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 7.0)); slab = bpy.context.active_object
+slab.scale = (18.0, 2.2, 14.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(slab, 0.07, 2); assign_material(slab, stone_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 14.4)); corn = bpy.context.active_object
+corn.scale = (19.0, 3.0, 1.4); bpy.ops.object.transform_apply(scale=True); bevel_obj(corn, 0.07, 2); assign_material(corn, stone_mat)
+for rx in (-6.5, 6.5):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(rx, 0.55, 7.0)); rib = bpy.context.active_object
+    rib.scale = (1.6, 1.8, 13.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(rib, 0.05, 1); assign_material(rib, gold_mat)
+for gx in (-2.4, 2.4):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(gx, 1.05, 7.0)); strip = bpy.context.active_object
+    strip.scale = (0.45, 0.35, 10.6); bpy.ops.object.transform_apply(scale=True); strip['openro_glow'] = True; assign_material(strip, glow_mat)
+"#,
+        ),
+    ])
+}
+
+/// Generate a complete Blender 3D Map & Architecture Kit (sculpted `.mesh`/`.obj`/`.glb` props,
+/// baked AO PNGs, checkered arcane floor texture, `map_kit.json`, and regenerated `AssetIds.luau`).
+pub fn build_map_kit(
+    data_dir: &Path,
+    project_root: Option<&Path>,
+    req: &Value,
+    blender_override: Option<&str>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let preset = req
+        .get("preset")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("arcane-dungeon-sanctum");
+    let specs = map_kit_prop_specs(preset)?;
+    let filter_names: Vec<String> = req
+        .get("props")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| slug_for_mesh_name(Some(s)))).collect())
+        .unwrap_or_default();
+
+    let mut props = Vec::new();
+    let mut all_files = Vec::new();
+    for (name, desc, script) in specs {
+        if !filter_names.is_empty() && !filter_names.iter().any(|f| f == name) {
+            continue;
+        }
+        let prop_req = json!({
+            "name": name,
+            "description": desc,
+            "script": script,
+            "bevel": 0.07,
+            "tex_size": 512,
+        });
+        let res = generate_for_project(data_dir, project_root, &prop_req, blender_override)?;
+        if let Some(arr) = res.get("project_files").and_then(Value::as_array) {
+            for f in arr {
+                if let Some(s) = f.as_str() {
+                    all_files.push(s.to_string());
+                }
+            }
+        }
+        props.push(res);
+    }
+
+    let mut floor_texture: Option<String> = None;
+    let floor_dir = project_root
+        .map(|r| r.join("assets").join("meshes"))
+        .unwrap_or_else(|| data_dir.join("meshes"));
+    if let Ok(()) = std::fs::create_dir_all(&floor_dir) {
+        let floor_abs = floor_dir.join("arena_floor_arcane.png");
+        if let Some(py) = find_python() {
+            let out = Command::new(&py)
+                .arg("-c")
+                .arg(ARENA_FLOOR_ARCANE_PY)
+                .arg(&floor_abs)
+                .output();
+            if out.is_ok_and(|o| o.status.success()) && check_png_file(&floor_abs, "arena_floor_arcane.png").is_ok() {
+                let rel = "assets/meshes/arena_floor_arcane.png".to_string();
+                all_files.push(rel.clone());
+                floor_texture = Some(rel);
+            }
+        }
+    }
+
+    let mut map_kit_manifest: Option<String> = None;
+    let mut asset_ids_luau: Option<Value> = None;
+    if let Some(root) = project_root {
+        let proj_meshes = root.join("assets").join("meshes");
+        std::fs::create_dir_all(&proj_meshes)
+            .map_err(|e| format!("create project meshes dir: {e}"))?;
+        let kit_json = json!({
+            "schema": "openro.map_kit.v1",
+            "preset": preset,
+            "floor_texture": floor_texture,
+            "props": props.iter().map(|p| json!({
+                "name": p["name"],
+                "tris": p["tris"],
+                "size": p["size"],
+                "roblox_mesh": p["roblox_mesh_file"],
+                "obj": p["obj_file"],
+                "glb": p["glb_file"],
+                "texture": p["texture_file"],
+                "glow_roblox_mesh": p["glow_roblox_mesh_file"],
+                "glow_texture": p["glow_texture_file"],
+            })).collect::<Vec<_>>(),
+        });
+        let kit_path = proj_meshes.join("map_kit.json");
+        std::fs::write(
+            &kit_path,
+            serde_json::to_string_pretty(&kit_json).unwrap_or_else(|_| "{}".to_string()),
+        )
+        .map_err(|e| format!("write map_kit.json: {e}"))?;
+        map_kit_manifest = Some("assets/meshes/map_kit.json".to_string());
+        let cg_args = if root.join("src/shared/content/AssetIds.luau").is_file() {
+            json!({ "out": "src/shared/content/AssetIds.luau" })
+        } else {
+            json!({})
+        };
+        asset_ids_luau = crate::opencloud::assets_codegen(root, &cg_args).ok();
+    }
+
+    Ok(json!({
+        "ok": true,
+        "schema": "openro.map_kit.v1",
+        "preset": preset,
+        "prop_count": props.len(),
+        "props": props,
+        "floor_texture": floor_texture,
+        "map_kit_manifest": map_kit_manifest,
+        "project_files": all_files,
+        "asset_ids_luau": asset_ids_luau,
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+    }))
+}
+
+fn find_python() -> Option<String> {
+    for cand in ["python3", "python"] {
+        if Command::new(cand)
+            .arg("-c")
+            .arg("from PIL import Image")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            return Some(cand.to_string());
+        }
+    }
+    None
 }

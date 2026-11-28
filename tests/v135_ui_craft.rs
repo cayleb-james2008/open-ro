@@ -142,13 +142,13 @@ fn assert_result_schema(v: &Value) {
 #[test]
 fn nine_craft_rules_include_image_gen_coverage_and_dense_master_detail() {
     let rules = ui_craft_rules();
-    assert_eq!(rules.len(), 9);
+    assert_eq!(rules.len(), 10);
     let numbers: Vec<u8> = rules.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=9).collect::<Vec<u8>>());
+    assert_eq!(numbers, (1..=10).collect::<Vec<u8>>());
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id).collect();
     ids.sort_unstable();
     ids.dedup();
-    assert_eq!(ids.len(), 9, "rule ids must be unique");
+    assert_eq!(ids.len(), 10, "rule ids must be unique");
 
     let r8 = rules.iter().find(|r| r.id == "image-gen-panel-coverage").expect("rule #8");
     assert_eq!(r8.number, 8);
@@ -166,7 +166,7 @@ fn nine_craft_rules_include_image_gen_coverage_and_dense_master_detail() {
     assert!(r9.anti_pattern.contains("outline-only stacks"));
 
     let presets = presets_json();
-    assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 9);
+    assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 10);
     for r in &rules {
         let text = format!("{} {} {} {}", r.title, r.rule, r.roblox_binding, r.anti_pattern);
         let low = text.to_ascii_lowercase();
@@ -177,7 +177,7 @@ fn nine_craft_rules_include_image_gen_coverage_and_dense_master_detail() {
 #[test]
 fn panels_sheet_recipe_slicing_and_prompts() {
     let recipes = sheet_recipes();
-    assert_eq!(recipes.len(), 5);
+    assert_eq!(recipes.len(), 6);
     let ids: Vec<&str> = recipes.iter().map(|r| r.id).collect();
     for expected in ["chrome_sheet", "icons_sheet", "rarity_frames_sheet", "card_borders_sheet", "panels_sheet"] {
         assert!(ids.contains(&expected), "missing {expected}");
@@ -248,7 +248,7 @@ fn panels_sheet_recipe_slicing_and_prompts() {
 
     let guidance = prompt_guidance();
     for needle in [
-        "9 Rules",
+        "10 Rules",
         "chrome_sheet",
         "panels_sheet",
         "icons_sheet",
@@ -520,7 +520,7 @@ fn agent_hook_and_prompts_expose_studio_verify_ui_craft() {
     }
     for (label, p) in [("system", &sp), ("project", &psp), ("worker", &work)] {
         assert!(p.contains("panels_sheet"), "{label} prompt missing panels_sheet");
-        assert!(p.contains("9 Rules"), "{label} prompt missing 9 UI Craft Rules");
+        assert!(p.contains("10 Rules"), "{label} prompt missing 10 UI Craft Rules");
     }
     assert!(sp.contains("offline_fallback"));
     assert!(!work.contains("UI Craft (7 Rules"), "stale 7-rule guidance");
