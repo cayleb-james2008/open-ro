@@ -1822,6 +1822,78 @@ pub fn resolve_rojo_shared_module_out(
 /// local Studio content fallbacks (`rbxasset://openro/<slug>/<rel_path>` when
 /// `studio_local_fallback == true`, Gap #84), `art/ui/**/slices.json`, and
 /// `assets/meshes/manifest.json`.
+fn rewrite_scene_node_uris(
+    node: &mut Value,
+    path_to_uri: &std::collections::BTreeMap<String, String>,
+) -> usize {
+    let Some(obj) = node.as_object_mut() else {
+        return 0;
+    };
+    let mut rewrites = 0usize;
+    if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+        for key in ["MeshId", "TextureId"] {
+            let Some(current) = props.get(key).and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            let Some(rel) = current
+                .strip_prefix("rbxasset://openro/")
+                .and_then(|rest| rest.split_once('/').map(|(_, path)| path))
+            else {
+                continue;
+            };
+            let Some(locked) = path_to_uri
+                .get(rel)
+                .filter(|uri| uri.starts_with("rbxassetid://"))
+            else {
+                continue;
+            };
+            props.insert(key.to_string(), json!(locked.clone()));
+            rewrites += 1;
+        }
+    }
+    if let Some(kids) = obj.get_mut("children").and_then(Value::as_array_mut) {
+        for kid in kids {
+            rewrites += rewrite_scene_node_uris(kid, path_to_uri);
+        }
+    }
+    rewrites
+}
+
+/// Rewrite local Studio-bridge `rbxasset://openro/<slug>/...` `MeshId` / `TextureId`
+/// values in `scene/workspace.model.json` to the locked `rbxassetid://` URIs resolved
+/// from `assets.lock.json`, so a published place never references local disk content.
+/// Rewriting is idempotent: a locked URI no longer carries the `rbxasset://openro/` prefix.
+fn rewrite_scene_mesh_uris(
+    root: &Path,
+    path_to_uri: &std::collections::BTreeMap<String, String>,
+) -> usize {
+    let Ok(scene_path) = safe_rel(root, crate::scene::SCENE_MODEL_REL) else {
+        return 0;
+    };
+    let Ok(raw) = std::fs::read_to_string(&scene_path) else {
+        return 0;
+    };
+    let Ok(mut model) = serde_json::from_str::<Value>(&raw) else {
+        return 0;
+    };
+    let rewrites = rewrite_scene_node_uris(&mut model, path_to_uri);
+    if rewrites == 0 {
+        return 0;
+    }
+    let Ok(text) = serde_json::to_string_pretty(&model) else {
+        return 0;
+    };
+    let tmp = scene_path.with_extension("json.openro-tmp");
+    if std::fs::write(&tmp, format!("{text}\n").as_bytes())
+        .and_then(|_| std::fs::rename(&tmp, &scene_path))
+        .is_err()
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return 0;
+    }
+    rewrites
+}
+
 pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     let manifest = read_manifest(root);
     let lock = read_lock(&lock_path(root, &manifest)?);
@@ -1971,6 +2043,10 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
             local_fallback_count += 1;
         }
     }
+
+    // Lock every local `rbxasset://openro/...` MeshId/TextureId in the scene model that
+    // now has an uploaded `rbxassetid://` counterpart, so publish never ships local URIs.
+    let scene_rewrites = rewrite_scene_mesh_uris(root, &path_to_uri);
 
     #[derive(Default)]
     struct CardCodegenRow {
@@ -2476,6 +2552,7 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         "studio_local_fallback": studio_local_fallback,
         "studio_project_slug": studio_project_slug,
         "skipped_rejected": skipped_rejected,
+        "scene_rewrites": scene_rewrites,
         "keys": keys,
     }))
 }
@@ -5351,6 +5428,61 @@ mod tests {
         assert!(txt.contains("[\"w1_naruto_art\"] = \"rbxassetid://555001\""), "missing <id>_art alias:\n{txt}");
         assert!(txt.contains("assetId = \"rbxassetid://999888777666\""), "missing mesh assetId:\n{txt}");
         assert_stylua_clean(&base);
+
+        // 4b. Local `rbxasset://openro/<slug>/...` MeshId/TextureId in the scene model
+        // rewrite to locked `rbxassetid://` ids during codegen (v1.38.1), idempotently.
+        std::fs::create_dir_all(base.join("scene")).unwrap();
+        std::fs::write(
+            base.join("scene/workspace.model.json"),
+            json!({
+                "className": "Workspace",
+                "name": "Workspace",
+                "properties": {},
+                "children": [
+                    {
+                        "className": "SpecialMesh",
+                        "name": "PortalMesh",
+                        "properties": {
+                            "MeshId": "rbxasset://openro/demo/assets/meshes/world1_portal_arch.obj",
+                            "TextureId": "rbxasset://openro/demo/art/cards/w1_naruto/art.png"
+                        },
+                        "children": []
+                    },
+                    {
+                        "className": "SpecialMesh",
+                        "name": "UnlockedMesh",
+                        "properties": {
+                            "MeshId": "rbxasset://openro/demo/assets/meshes/unlocked.mesh"
+                        },
+                        "children": []
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let res = assets_codegen(&base, &json!({})).expect("codegen scene rewrite");
+        assert_eq!(res["scene_rewrites"], json!(2));
+        let scene = std::fs::read_to_string(base.join("scene/workspace.model.json")).unwrap();
+        assert!(
+            scene.contains("\"MeshId\": \"rbxassetid://999888777666\""),
+            "scene MeshId not locked:\n{scene}"
+        );
+        assert!(
+            scene.contains("\"TextureId\": \"rbxassetid://555001\""),
+            "scene TextureId not locked:\n{scene}"
+        );
+        assert!(
+            scene.contains("rbxasset://openro/demo/assets/meshes/unlocked.mesh"),
+            "unlocked local fallback must survive codegen:\n{scene}"
+        );
+        // Idempotent: a second run rewrites nothing and leaves the file byte-identical.
+        let res = assets_codegen(&base, &json!({})).expect("codegen scene rewrite again");
+        assert_eq!(res["scene_rewrites"], json!(0));
+        assert_eq!(
+            std::fs::read_to_string(base.join("scene/workspace.model.json")).unwrap(),
+            scene
+        );
 
         // 5. ProductIds.luau codegen (empty + populated, stylua-clean, #69)
         let res = products_codegen(&base, &json!({})).expect("products codegen empty");

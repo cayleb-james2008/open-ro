@@ -16,7 +16,81 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Studio needs a beat between leaving Play mode and accepting the next Play/Stop
+/// command; firing immediately makes the bridge answer with a transient 502.
+const PLAY_STOP_COOLDOWN: Duration = Duration::from_millis(1200);
+/// How long to back off before retrying a transient MCP failure.
+const TRANSIENT_RETRY_BACKOFF: Duration = Duration::from_millis(450);
+
+/// A bridge hiccup worth one retry: HTTP 502/503 from the local Studio HTTP shim,
+/// or the Studio process still being busy shutting down a playtest.
+fn is_transient_mcp_error(err: &str) -> bool {
+    let low = err.to_ascii_lowercase();
+    let has_status = |code: &str| {
+        let bytes = low.as_bytes();
+        let mut from = 0;
+        while let Some(pos) = low[from..].find(code) {
+            let abs = from + pos;
+            let bounded_before = abs == 0
+                || (!bytes[abs - 1].is_ascii_alphanumeric() && bytes[abs - 1] != b'_');
+            let after = abs + code.len();
+            let bounded_after = after >= bytes.len()
+                || (!bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_');
+            if bounded_before && bounded_after {
+                let window = &low[abs.saturating_sub(16)..abs];
+                if ["http", "status", "code", "error"]
+                    .iter()
+                    .any(|word| window.contains(word))
+                {
+                    return true;
+                }
+            }
+            from = after;
+        }
+        false
+    };
+    has_status("502")
+        || has_status("503")
+        || low.contains("bad gateway")
+        || low.contains("service unavailable")
+        || low.contains("temporarily unavailable")
+        || low.contains("connection reset")
+        || low.contains("econnreset")
+        || low.contains("studio is busy")
+        || low.contains("server busy")
+}
+
+/// Remaining post-stop cooldown for `now`; zero when the window has elapsed.
+fn stop_cooldown_remaining(
+    last_stop: Option<Instant>,
+    now: Instant,
+    cooldown: Duration,
+) -> Duration {
+    match last_stop {
+        Some(at) => cooldown
+            .checked_sub(now.saturating_duration_since(at))
+            .unwrap_or_default(),
+        None => Duration::ZERO,
+    }
+}
+
+/// Run `op` once, retrying exactly once when it fails with a transient bridge error.
+fn with_transient_retry<T, F>(backoff: Duration, mut op: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    match op() {
+        Err(e) if is_transient_mcp_error(&e) => {
+            if !backoff.is_zero() {
+                std::thread::sleep(backoff);
+            }
+            op()
+        }
+        other => other,
+    }
+}
 
 /// Official Roblox Studio MCP tools exposed by OpenRO v0.9.0.
 pub const OFFICIAL_STUDIO_TOOLS: &[&str] = &[
@@ -212,6 +286,8 @@ pub struct McpClient {
     capture_seq: u64,
     /// Optional frame captured during translated official-MCP `playtest`.
     last_playtest_frame: Option<StudioFrame>,
+    /// When the last `start_stop_play("stop")` completed, for the post-stop cooldown.
+    last_play_stop: Option<Instant>,
 }
 
 impl McpClient {
@@ -316,6 +392,7 @@ impl McpClient {
             datamodel_type: "Edit".to_string(),
             capture_seq: 0,
             last_playtest_frame: None,
+            last_play_stop: None,
         };
         client.initialize()?;
         client.discover_tools();
@@ -679,10 +756,12 @@ impl McpClient {
     }
 
     fn call_tool_raw(&mut self, name: &str, arguments: Value) -> Result<String, String> {
-        let result = self.request(
-            "tools/call",
-            json!({ "name": name, "arguments": arguments }),
-        )?;
+        let result = with_transient_retry(TRANSIENT_RETRY_BACKOFF, || {
+            self.request(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            )
+        })?;
         let text = result
             .pointer("/content/0/text")
             .and_then(|t| t.as_str())
@@ -1102,6 +1181,16 @@ impl McpClient {
             }
         };
         let is_start = normalized != "stop";
+        if is_start {
+            let wait = stop_cooldown_remaining(
+                self.last_play_stop,
+                Instant::now(),
+                PLAY_STOP_COOLDOWN,
+            );
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
+        }
         if self.has_tool("start_stop_play") {
             let prepared = self.prepare_official_args(
                 "start_stop_play",
@@ -1110,7 +1199,18 @@ impl McpClient {
                     "is_start": is_start,
                 }),
             );
-            let text = self.call_tool("start_stop_play", prepared)?;
+            let text = match self.call_tool("start_stop_play", prepared) {
+                Ok(text) => text,
+                Err(e) => {
+                    if !is_start {
+                        self.last_play_stop = Some(Instant::now());
+                    }
+                    return Err(e);
+                }
+            };
+            if !is_start {
+                self.last_play_stop = Some(Instant::now());
+            }
             self.datamodel_type = match normalized {
                 "start_play" => "Client".to_string(),
                 "run_server" => "Server".to_string(),
@@ -1128,6 +1228,7 @@ impl McpClient {
             }));
         }
         if !is_start {
+            self.last_play_stop = Some(Instant::now());
             self.datamodel_type = "Edit".to_string();
             return Ok(json!({
                 "ok": true,
@@ -1909,5 +2010,75 @@ mod tests {
             src.contains(r#"d:IsA("ValueBase")"#),
             "Phase 1 place-tree walk must include ValueBase nodes (e.g. ReplicatedStorage.State.*)"
         );
+    }
+}
+
+#[cfg(test)]
+mod v1381_tests {
+    use super::*;
+
+    #[test]
+    fn transient_bridge_errors_are_classified_without_port_false_positives() {
+        assert!(is_transient_mcp_error("MCP tools/call error: HTTP 502 Bad Gateway"));
+        assert!(is_transient_mcp_error("studio is busy, retry shortly"));
+        assert!(is_transient_mcp_error("upstream 503 Service Unavailable"));
+        assert!(is_transient_mcp_error("status code 502"));
+        // A port number or an unrelated id must never be read as an HTTP status.
+        assert!(!is_transient_mcp_error("dial tcp 127.0.0.1:502 refused"));
+        assert!(!is_transient_mcp_error("branch_id=1502 not found"));
+        assert!(!is_transient_mcp_error("script compile error: unexpected token"));
+    }
+
+    #[test]
+    fn transient_retry_recovers_once_and_does_not_retry_permanent_failures() {
+        let mut calls = 0;
+        let out = with_transient_retry(Duration::ZERO, || {
+            calls += 1;
+            if calls == 1 {
+                Err("HTTP 502 Bad Gateway".to_string())
+            } else {
+                Ok("ok")
+            }
+        });
+        assert_eq!(out, Ok("ok"));
+        assert_eq!(calls, 2);
+
+        // Exhaustion: both attempts fail transiently; the caller sees the error.
+        let mut exhausted = 0;
+        let err = with_transient_retry(Duration::ZERO, || {
+            exhausted += 1;
+            Err::<(), _>("HTTP 502 Bad Gateway".to_string())
+        })
+        .unwrap_err();
+        assert!(err.contains("502"));
+        assert_eq!(exhausted, 2);
+
+        let mut permanent = 0;
+        let err = with_transient_retry(Duration::ZERO, || {
+            permanent += 1;
+            Err::<(), _>("script not found".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(err, "script not found");
+        assert_eq!(permanent, 1);
+    }
+
+    #[test]
+    fn stop_cooldown_holds_play_until_the_window_elapses() {
+        let cooldown = Duration::from_millis(1200);
+        let now = Instant::now();
+        // No prior stop means nothing to wait for.
+        assert!(stop_cooldown_remaining(None, now, cooldown).is_zero());
+
+        let just_stopped = now - Duration::from_millis(200);
+        let remaining = stop_cooldown_remaining(Some(just_stopped), now, cooldown);
+        assert!(
+            remaining <= Duration::from_millis(1000)
+                && remaining > Duration::from_millis(950),
+            "expected ~1000ms of cooldown left, got {remaining:?}"
+        );
+
+        let long_ago = now - Duration::from_millis(5000);
+        assert!(stop_cooldown_remaining(Some(long_ago), now, cooldown).is_zero());
     }
 }

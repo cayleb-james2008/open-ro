@@ -4,6 +4,12 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## [1.38.1] - 2026-11-28
+
+- Fixed `POST /monetization-audit` auto-repair on ModuleScripts (`src/playtest.rs`): injected `ProcessReceipt`, `BindToClose`, and hook-integrity snippets now insert before a trailing top-level `return <Module>` instead of after it, so repairs no longer produce unreachable code or a Luau syntax error; regression tests cover ModuleScript and plain-script paths.
+- Added publish-guard `.obj` detection and locked scene-mesh rewriting (`src/playtest.rs`, `src/opencloud.rs`): `evaluate_publish_guard` now reports a blocker when a `SpecialMesh.MeshId` points at a Wavefront `.obj` (Studio needs native binary `.mesh` or an uploaded `rbxassetid://` mesh), and `assets/codegen` rewrites `rbxasset://openro/<slug>/...` `MeshId`/`TextureId` values in `scene/workspace.model.json` to their locked `rbxassetid://` ids from `assets.lock.json`, idempotently and without touching unrelated nodes.
+- Added Studio MCP post-stop cooldown and transient-502 retry (`src/mcp.rs`): play/verify endpoints now wait out a short cooldown after `start_stop_play("stop")` before starting Play again, and every MCP tool call retries exactly once with backoff on transient bridge failures (HTTP 502/503, busy/reset), with unit tests for recovery, exhaustion, and cooldown math.
+
 ## [1.38.0] - 2026-11-28
 
 - Added Live Sober Player Teardown & YouTube Keyframe Extraction (`src/teardown.rs`, `src/server.rs`, `src/teamwork.rs`, `src/agent.rs`, Gap `#97`): `teardown_play_live` (`POST /api/projects/:id/teardown/play-live`, mockable via `OPENRO_TEARDOWN_LIVE_MOCK_PNG` and `OPENRO_TEARDOWN_LIVE_AUTH_REQUIRED=1`, tracking exact Sober Flatpak child PID cleanly without `pkill -f` and never bypassing auth/2FA/CAPTCHA), `teardown_youtube_frames` (`POST /api/projects/:id/teardown/youtube-frames`, strict 11-char YouTube ID allowlist after `--` and `OPENRO_TEARDOWN_YT_FRAMES_MOCK_DIR`), and `teardown_get` in Agent & Teamwork modes.

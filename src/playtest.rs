@@ -3217,7 +3217,7 @@ fn surgical_restore_hooks(
         if let Some(owner) = find_hook_owner(baseline_scripts, needle) {
             if find_hook_owner(current_scripts, needle).is_none() {
                 if let Some(curr) = current_scripts.get_mut(&owner) {
-                    curr.push_str(snippet);
+                    *curr = insert_luau_snippet(curr, snippet);
                     modified_files.insert(owner);
                     hooks_restored += 1;
                 }
@@ -3233,7 +3233,7 @@ fn surgical_restore_hooks(
         let entry = current_scripts
             .entry(target.clone())
             .or_insert_with(|| "--!strict\n".to_string());
-        entry.push_str(spawn_snippet);
+        *entry = insert_luau_snippet(entry, spawn_snippet);
         if target == default_spawn_target && !restored_files.contains(&target) {
             restored_files.push(target.clone());
         } else {
@@ -3789,12 +3789,104 @@ fn extract_quoted_arg(s: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// Flag the one mesh shape Studio silently refuses to render: a `SpecialMesh` whose
+/// `MeshId` points at a Wavefront `.obj`. Studio only accepts a native binary `.mesh`
+/// (`v2.00`) locally, or an uploaded `rbxassetid://` mesh in a published place.
+fn obj_mesh_guard_issue(
+    class_name: &str,
+    mesh_id: &str,
+    place_path: &str,
+    file: &str,
+) -> Option<Value> {
+    if !class_name.eq_ignore_ascii_case("SpecialMesh")
+        || !mesh_id.to_ascii_lowercase().ends_with(".obj")
+    {
+        return None;
+    }
+    Some(json!({
+        "id": format!("guard:asset:obj_mesh:{place_path}"),
+        "category": "assets",
+        "severity": "error",
+        "title": "SpecialMesh.MeshId points at a Wavefront .obj",
+        "detail": "Studio renders SpecialMesh only from a native binary .mesh (v2.00) or an uploaded rbxassetid:// mesh. Convert the .obj to .mesh, or upload it and lock the returned asset id.",
+        "file": file,
+        "place_path": place_path,
+        "line": 1,
+        "autofixable": true,
+        "fix_action": "sync_asset_ids",
+        "fix_hint": "Upload the mesh, then run assets/codegen so MeshId rewrites to the locked rbxassetid:// URI.",
+    }))
+}
+
+fn scene_mesh_issues(node: &Value, path_prefix: &str, out: &mut Vec<Value>) {
+    let Some(obj) = node.as_object() else {
+        return;
+    };
+    let class = obj
+        .get("className")
+        .or_else(|| obj.get("class_name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let name = obj.get("name").and_then(Value::as_str).unwrap_or("");
+    let path = match (path_prefix.is_empty(), name.is_empty()) {
+        (true, _) => name.to_string(),
+        (false, true) => path_prefix.to_string(),
+        (false, false) => format!("{path_prefix}.{name}"),
+    };
+    if let Some(mesh_id) = obj
+        .get("properties")
+        .and_then(|p| p.get("MeshId"))
+        .and_then(Value::as_str)
+    {
+        if let Some(issue) =
+            obj_mesh_guard_issue(class, mesh_id, &path, crate::scene::SCENE_MODEL_REL)
+        {
+            out.push(issue);
+        }
+    }
+    if let Some(kids) = obj.get("children").and_then(Value::as_array) {
+        for kid in kids {
+            scene_mesh_issues(kid, &path, out);
+        }
+    }
+}
+
+fn workspace_model_guard_issues(root: &std::path::Path) -> Vec<Value> {
+    let Ok(raw) = std::fs::read_to_string(root.join(crate::scene::SCENE_MODEL_REL)) else {
+        return Vec::new();
+    };
+    let Ok(model) = serde_json::from_str::<Value>(&raw) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    scene_mesh_issues(&model, "", &mut out);
+    out
+}
+
 pub fn evaluate_publish_guard(
     scripts: &std::collections::BTreeMap<String, String>,
     dep_report: &Value,
     has_spawn: bool,
     has_server_entry: bool,
     asset_ids_src: Option<&str>,
+) -> Value {
+    evaluate_publish_guard_with_scene(
+        scripts,
+        dep_report,
+        has_spawn,
+        has_server_entry,
+        asset_ids_src,
+        &[],
+    )
+}
+
+pub fn evaluate_publish_guard_with_scene(
+    scripts: &std::collections::BTreeMap<String, String>,
+    dep_report: &Value,
+    has_spawn: bool,
+    has_server_entry: bool,
+    asset_ids_src: Option<&str>,
+    scene_issues: &[Value],
 ) -> Value {
     let mut issues: Vec<Value> = Vec::new();
     let mut assets_ok = true;
@@ -4022,6 +4114,13 @@ pub fn evaluate_publish_guard(
         }));
     }
 
+    for issue in scene_issues {
+        if issue["category"] == "assets" && issue["severity"] == "error" {
+            assets_ok = false;
+        }
+        issues.push(issue.clone());
+    }
+
     let blocker_count = issues
         .iter()
         .filter(|i| i["severity"] == "error")
@@ -4113,12 +4212,14 @@ pub fn project_publish_guard(r: &ProjectRef) -> Result<Value, Reply> {
     let asset_ids_src = scripts
         .get("src/shared/AssetIds.luau")
         .map(String::as_str);
-    Ok(evaluate_publish_guard(
+    let scene_issues = workspace_model_guard_issues(&r.dir);
+    Ok(evaluate_publish_guard_with_scene(
         &scripts,
         &dep,
         has_spawn,
         has_server_entry,
         asset_ids_src,
+        &scene_issues,
     ))
 }
 
@@ -4223,8 +4324,14 @@ pub fn autofix_project_publish_guard(
                 .find(|k| k.to_ascii_lowercase().contains("monetization") || k.to_ascii_lowercase().contains("shop"))
                 .cloned()
                 .unwrap_or_else(|| "src/server/MonetizationService.server.luau".to_string());
-            let mut src = scripts.get(&target).cloned().unwrap_or_else(|| "--!strict\n".to_string());
-            src.push_str("\ndo\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tif not MarketplaceService.ProcessReceipt then\n\t\tMarketplaceService.ProcessReceipt = function()\n\t\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\t\tend\n\tend\nend\n");
+            let base_src = scripts
+                .get(&target)
+                .cloned()
+                .unwrap_or_else(|| "--!strict\n".to_string());
+            let src = insert_luau_snippet(
+                &base_src,
+                "\ndo\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tif not MarketplaceService.ProcessReceipt then\n\t\tMarketplaceService.ProcessReceipt = function()\n\t\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\t\tend\n\tend\nend\n",
+            );
             write_project_luau(&r.dir, &target, &src)?;
             modified_files.insert(target);
             fixed_count += 1;
@@ -4272,7 +4379,34 @@ pub fn studio_publish_guard_from_tree(tree: &Value) -> Value {
         .iter()
         .find(|(k, _)| k.ends_with(".AssetIds") || *k == "ReplicatedStorage.AssetIds")
         .map(|(_, v)| v.as_str());
-    evaluate_publish_guard(&scripts, &dep, has_spawn, has_server_entry, asset_ids_src)
+    let mut scene_issues = Vec::new();
+    if let Some(instances) = tree.get("instances").and_then(Value::as_object) {
+        for (dot, node) in instances {
+            let class = node
+                .get("class_name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if let Some(mesh_id) = node
+                .get("properties")
+                .and_then(|p| p.get("MeshId"))
+                .and_then(Value::as_str)
+            {
+                if let Some(issue) =
+                    obj_mesh_guard_issue(class, mesh_id, dot, "scene/workspace.model.json")
+                {
+                    scene_issues.push(issue);
+                }
+            }
+        }
+    }
+    evaluate_publish_guard_with_scene(
+        &scripts,
+        &dep,
+        has_spawn,
+        has_server_entry,
+        asset_ids_src,
+        &scene_issues,
+    )
 }
 
 pub fn studio_autofix_publish_guard_tree(
@@ -4557,6 +4691,49 @@ pub fn evaluate_monetization_audit(scripts: &std::collections::BTreeMap<String, 
     })
 }
 
+/// Append an audit snippet to a script without breaking ModuleScripts.
+///
+/// A ModuleScript ends with a top-level `return <Module>`; appending after that
+/// `return` produces unreachable code and a Luau syntax error. When the last code
+/// line is a column-zero `return`, the snippet goes *before* it instead. Returns
+/// nested inside functions are indented, so they never match.
+pub(crate) fn insert_luau_snippet(src: &str, snippet: &str) -> String {
+    let snip = snippet.trim_matches('\n');
+    let lines: Vec<&str> = src.lines().collect();
+    let last_code = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"));
+    let Some(idx) = last_code else {
+        return format!("{src}{snippet}");
+    };
+    let tail = lines[idx];
+    let top_level_return = (tail == "return"
+        || tail.starts_with("return ")
+        || tail.starts_with("return\t"))
+        && !tail.starts_with(char::is_whitespace);
+    if !top_level_return {
+        let mut out = src.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(snip);
+        out.push('\n');
+        return out;
+    }
+    let mut out = String::with_capacity(src.len() + snip.len() + 2);
+    if idx > 0 {
+        out.push_str(&lines[..idx].join("\n"));
+        out.push('\n');
+    }
+    out.push_str(snip);
+    out.push('\n');
+    out.push_str(&lines[idx..].join("\n"));
+    if src.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 fn comment_out_unsafe_process_receipt(src: &str) -> (String, bool) {
     let lines: Vec<&str> = src.lines().collect();
     let Some(start) = lines.iter().position(|l| {
@@ -4596,9 +4773,11 @@ fn comment_out_unsafe_process_receipt(src: &str) -> (String, bool) {
             out.push((*l).to_string());
         }
     }
-    let mut joined = out.join("\n");
-    joined.push_str(IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
-    (joined, true)
+    let joined = out.join("\n");
+    (
+        insert_luau_snippet(&joined, IDEMPOTENT_PROCESS_RECEIPT_SNIPPET),
+        true,
+    )
 }
 
 fn wrap_unguarded_gamepass_lines(src: &str) -> (String, usize) {
@@ -4678,11 +4857,11 @@ fn apply_monetization_repairs_to_map(
                     "ServerScriptService.MonetizationService".to_string()
                 }
             });
-        let mut next = scripts
+        let base_src = scripts
             .get(&target)
             .cloned()
             .unwrap_or_else(|| "--!strict\n".to_string());
-        next.push_str(IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
+        let next = insert_luau_snippet(&base_src, IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
         scripts.insert(target.clone(), next);
         modified.insert(target);
         fixed_count += 1;
@@ -4700,7 +4879,7 @@ fn apply_monetization_repairs_to_map(
                 {
                     let (mut next, replaced) = comment_out_unsafe_process_receipt(&src);
                     if !replaced {
-                        next.push_str(IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
+                        next = insert_luau_snippet(&next, IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
                     }
                     scripts.insert(k.clone(), next);
                     modified.insert(k);
@@ -4720,8 +4899,7 @@ fn apply_monetization_repairs_to_map(
                         && (tr.contains("GetDataStore(") || tr.contains("GetOrderedDataStore("))
                 });
                 if uses_ds && !src.contains("BindToClose") {
-                    let mut next = src;
-                    next.push_str(BIND_TO_CLOSE_SNIPPET);
+                    let next = insert_luau_snippet(&src, BIND_TO_CLOSE_SNIPPET);
                     scripts.insert(k.clone(), next);
                     modified.insert(k);
                     fixed_count += 1;
@@ -7208,6 +7386,71 @@ mod tests {
         assert!(expectation(&json!({ "truthy": true }), &json!(false)).is_err());
         assert!(expectation(&json!({ "contains": "ab" }), &json!("xaby")).is_ok());
         assert!(expectation(&json!({}), &Value::Null).is_ok());
+    }
+
+    #[test]
+    fn audit_snippet_lands_before_module_return() {
+        let module = "--!strict\nlocal M = {}\nfunction M.ready()\n\treturn true\nend\nreturn M\n";
+        let out = insert_luau_snippet(module, BIND_TO_CLOSE_SNIPPET);
+        let snippet_at = out.find("game:BindToClose").expect("snippet present");
+        let return_at = out.rfind("\nreturn M").expect("module return present");
+        assert!(
+            snippet_at < return_at,
+            "snippet must precede the trailing module return:\n{out}"
+        );
+        assert!(out.ends_with("\nreturn M\n"), "return M must stay last:\n{out}");
+        assert!(out.contains("function M.ready()\n\treturn true\nend\n"));
+        assert_eq!(out.matches("return M").count(), 1);
+    }
+
+    #[test]
+    fn audit_snippet_appends_to_non_module_script() {
+        let script = "--!strict\nlocal Players = game:GetService(\"Players\")\n";
+        let out = insert_luau_snippet(script, BIND_TO_CLOSE_SNIPPET);
+        assert!(out.starts_with(script));
+        assert!(out.trim_end().ends_with("end)"));
+        assert!(out.contains("game:BindToClose"));
+    }
+
+    #[test]
+    fn publish_guard_flags_obj_special_mesh() {
+        assert!(obj_mesh_guard_issue(
+            "SpecialMesh",
+            "rbxasset://openro/demo/assets/meshes/arch.obj",
+            "Workspace.Arch.Mesh",
+            crate::scene::SCENE_MODEL_REL,
+        )
+        .is_some());
+        assert!(obj_mesh_guard_issue("SpecialMesh", "rbxassetid://123", "Workspace.Ok", "x")
+            .is_none());
+        assert!(obj_mesh_guard_issue("MeshPart", "arch.obj", "Workspace.Part", "x").is_none());
+
+        let model = json!({
+            "className": "Workspace",
+            "name": "Workspace",
+            "children": [{
+                "className": "SpecialMesh",
+                "name": "Arch",
+                "properties": { "MeshId": "rbxasset://openro/demo/assets/meshes/arch.obj" },
+                "children": []
+            }]
+        });
+        let mut scene_issues = Vec::new();
+        scene_mesh_issues(&model, "", &mut scene_issues);
+        assert_eq!(scene_issues.len(), 1);
+        assert_eq!(scene_issues[0]["place_path"], "Workspace.Arch");
+
+        let report = evaluate_publish_guard_with_scene(
+            &std::collections::BTreeMap::new(),
+            &json!({}),
+            true,
+            true,
+            None,
+            &scene_issues,
+        );
+        assert_eq!(report["blocker_count"], 1);
+        assert_eq!(report["ready_to_publish"], false);
+        assert_eq!(report["checks"]["assets"], false);
     }
 
     #[test]
