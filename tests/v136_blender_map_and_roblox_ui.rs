@@ -285,3 +285,39 @@ fn oss_roblox_adapters_prompts_and_build_map_route() {
     assert_eq!(code_missing, 404);
     let _ = ProjectStore::load(None);
 }
+
+#[test]
+fn build_map_kit_runs_headless_blender_when_installed() {
+    if !openro_rs::library::detect_blender(None).detected {
+        return;
+    }
+    let dir = scratch("blender-map-live");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("src/shared/content")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        json!({ "name": "live-sanctum", "tree": { "$className": "DataModel" } }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(proj.join("src/shared/content/AssetIds.luau"), "return {}\n").unwrap();
+
+    let res = build_map_kit(
+        &dir,
+        Some(&proj),
+        &json!({ "preset": "arcane-dungeon-sanctum", "props": ["soul_brazier"] }),
+        None,
+    )
+    .expect("build_map_kit with live Blender");
+    assert_eq!(res["ok"], true);
+    assert_eq!(res["prop_count"], 1);
+    let mesh_bytes = std::fs::read(proj.join("assets/meshes/soul_brazier.mesh")).unwrap();
+    assert!(mesh_bytes.starts_with(b"version 2.00\n"));
+    let glow_bytes = std::fs::read(proj.join("assets/meshes/soul_brazier_glow.mesh")).unwrap();
+    assert!(glow_bytes.starts_with(b"version 2.00\n"));
+    assert!(proj.join("assets/meshes/soul_brazier.png").is_file());
+    assert!(proj.join("assets/meshes/arena_floor_arcane.png").is_file());
+    let luau = std::fs::read_to_string(proj.join("src/shared/content/AssetIds.luau")).unwrap();
+    assert!(luau.contains("soul_brazier.mesh"), "{luau}");
+    assert!(luau.contains("arena_floor_arcane.png"), "{luau}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

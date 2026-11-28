@@ -1162,10 +1162,10 @@ fn map_kit_prop_specs(preset: &str) -> Result<Vec<(&'static str, &'static str, &
         (
             "dungeon_column",
             "Sculpted octagonal sapphire-slate dungeon column with stepped plinth, beveled stone rings, ornate capital, and glowing cyan sigil collar",
-            r#"
-stone_mat = make_stone_material((0.12, 0.17, 0.30, 1.0))
-gold_mat = make_metallic_material((0.78, 0.62, 0.24, 1.0), metallic=0.88, roughness=0.28)
-glow_mat = make_glow_material((0.16, 0.78, 1.0, 1.0), strength=4.2)
+            r##"
+stone_mat = make_stone_material("stone", "#1F2E56", "#0D1530")
+gold_mat = make_metallic_material("gold", "#D4A43C", "#3A2A0D", roughness=0.28)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.5)
 
 bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=3.2, depth=1.6, location=(0, 0, 0.8))
 base1 = bpy.context.active_object; bevel_obj(base1, 0.08, 2); assign_material(base1, stone_mat)
@@ -1179,16 +1179,16 @@ for z in (3.2, 8.8, 14.2):
 bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=3.15, depth=1.8, location=(0, 0, 16.1))
 cap = bpy.context.active_object; bevel_obj(cap, 0.08, 2); assign_material(cap, stone_mat)
 bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=2.12, depth=0.75, location=(0, 0, 14.95))
-gcol = bpy.context.active_object; gcol['openro_glow'] = True; assign_material(gcol, glow_mat)
-"#,
+gcol = bpy.context.active_object; gcol['glow'] = True; assign_material(gcol, glow_mat)
+"##,
         ),
         (
             "soul_brazier",
             "Carved octagonal stone torch brazier with gilded bronze basin rim and glowing crystalline arcane flame core",
-            r#"
-stone_mat = make_stone_material((0.13, 0.18, 0.31, 1.0))
-gold_mat = make_metallic_material((0.84, 0.66, 0.25, 1.0), metallic=0.90, roughness=0.25)
-glow_mat = make_glow_material((0.20, 0.85, 1.0, 1.0), strength=5.0)
+            r##"
+stone_mat = make_stone_material("stone", "#1F2E56", "#0D1530")
+gold_mat = make_metallic_material("gold", "#D4A43C", "#3A2A0D", roughness=0.25)
+glow_mat = make_glow_material("glow", "#38BDF8", 5.0)
 
 bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=2.1, depth=1.2, location=(0, 0, 0.6))
 ped = bpy.context.active_object; bevel_obj(ped, 0.06, 2); assign_material(ped, stone_mat)
@@ -1199,16 +1199,16 @@ bowl = bpy.context.active_object; bevel_obj(bowl, 0.06, 2); assign_material(bowl
 bpy.ops.mesh.primitive_torus_add(major_segments=16, minor_segments=8, major_radius=2.15, minor_radius=0.24, location=(0, 0, 4.55))
 rim = bpy.context.active_object; assign_material(rim, gold_mat)
 bpy.ops.mesh.primitive_cone_add(vertices=8, radius1=1.05, radius2=0.08, depth=2.3, location=(0, 0, 5.4))
-flame = bpy.context.active_object; flame['openro_glow'] = True; assign_material(flame, glow_mat)
-"#,
+flame = bpy.context.active_object; flame['glow'] = True; assign_material(flame, glow_mat)
+"##,
         ),
         (
             "sanctum_arch_gate",
             "Monumental dungeon sanctum stone arch gate with stepped buttress piers, gilded keystone crest, and glowing portal arc",
-            r#"
-stone_mat = make_stone_material((0.11, 0.16, 0.29, 1.0))
-gold_mat = make_metallic_material((0.82, 0.64, 0.24, 1.0), metallic=0.88, roughness=0.27)
-glow_mat = make_glow_material((0.18, 0.80, 1.0, 1.0), strength=4.5)
+            r##"
+stone_mat = make_stone_material("stone", "#1B284C", "#0C1329")
+gold_mat = make_metallic_material("gold", "#D4A43C", "#3A2A0D", roughness=0.27)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.5)
 
 for sx in (-8.5, 8.5):
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 0, 1.0)); b = bpy.context.active_object
@@ -1220,16 +1220,16 @@ lintel.scale = (23.0, 4.6, 3.2); bpy.ops.object.transform_apply(scale=True); bev
 bpy.ops.mesh.primitive_cone_add(vertices=6, radius1=2.2, radius2=0.5, depth=3.2, location=(0, 0, 19.6))
 crest = bpy.context.active_object; bevel_obj(crest, 0.05, 1); assign_material(crest, gold_mat)
 bpy.ops.mesh.primitive_torus_add(major_segments=20, minor_segments=8, major_radius=5.8, minor_radius=0.35, location=(0, 0, 11.2), rotation=(math.pi / 2, 0, 0))
-portal = bpy.context.active_object; portal['openro_glow'] = True; assign_material(portal, glow_mat)
-"#,
+portal = bpy.context.active_object; portal['glow'] = True; assign_material(portal, glow_mat)
+"##,
         ),
         (
             "summon_altar",
             "Stepped octagonal summon dais with bronze sigil ring and luminous arcane core pad",
-            r#"
-stone_mat = make_stone_material((0.13, 0.19, 0.34, 1.0))
-gold_mat = make_metallic_material((0.82, 0.65, 0.26, 1.0), metallic=0.88, roughness=0.28)
-glow_mat = make_glow_material((0.24, 0.84, 1.0, 1.0), strength=4.6)
+            r##"
+stone_mat = make_stone_material("stone", "#1F2E56", "#0D1530")
+gold_mat = make_metallic_material("gold", "#D4A43C", "#3A2A0D", roughness=0.28)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.6)
 
 bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=6.4, depth=0.9, location=(0, 0, 0.45))
 d1 = bpy.context.active_object; bevel_obj(d1, 0.07, 2); assign_material(d1, stone_mat)
@@ -1238,16 +1238,16 @@ d2 = bpy.context.active_object; bevel_obj(d2, 0.06, 2); assign_material(d2, ston
 bpy.ops.mesh.primitive_torus_add(major_segments=24, minor_segments=8, major_radius=4.1, minor_radius=0.25, location=(0, 0, 1.85))
 ring = bpy.context.active_object; assign_material(ring, gold_mat)
 bpy.ops.mesh.primitive_cylinder_add(vertices=16, radius=3.4, depth=0.35, location=(0, 0, 1.95))
-core = bpy.context.active_object; core['openro_glow'] = True; assign_material(core, glow_mat)
-"#,
+core = bpy.context.active_object; core['glow'] = True; assign_material(core, glow_mat)
+"##,
         ),
         (
             "relief_wall_panel",
             "Architectural fortress relief stone wall bay with twin buttress ribs, beveled cornice, and vertical arcane light conduits",
-            r#"
-stone_mat = make_stone_material((0.10, 0.15, 0.27, 1.0))
-gold_mat = make_metallic_material((0.76, 0.60, 0.24, 1.0), metallic=0.85, roughness=0.30)
-glow_mat = make_glow_material((0.16, 0.76, 1.0, 1.0), strength=4.0)
+            r##"
+stone_mat = make_stone_material("stone", "#192547", "#0B1226")
+gold_mat = make_metallic_material("gold", "#D4A43C", "#3A2A0D", roughness=0.30)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.2)
 
 bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 7.0)); slab = bpy.context.active_object
 slab.scale = (18.0, 2.2, 14.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(slab, 0.07, 2); assign_material(slab, stone_mat)
@@ -1258,8 +1258,8 @@ for rx in (-6.5, 6.5):
     rib.scale = (1.6, 1.8, 13.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(rib, 0.05, 1); assign_material(rib, gold_mat)
 for gx in (-2.4, 2.4):
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=(gx, 1.05, 7.0)); strip = bpy.context.active_object
-    strip.scale = (0.45, 0.35, 10.6); bpy.ops.object.transform_apply(scale=True); strip['openro_glow'] = True; assign_material(strip, glow_mat)
-"#,
+    strip.scale = (0.45, 0.35, 10.6); bpy.ops.object.transform_apply(scale=True); strip['glow'] = True; assign_material(strip, glow_mat)
+"##,
         ),
     ])
 }
@@ -1297,7 +1297,7 @@ pub fn build_map_kit(
             "description": desc,
             "script": script,
             "bevel": 0.07,
-            "tex_size": 512,
+            "texture_size": 512,
         });
         let res = generate_for_project(data_dir, project_root, &prop_req, blender_override)?;
         if let Some(arr) = res.get("project_files").and_then(Value::as_array) {
