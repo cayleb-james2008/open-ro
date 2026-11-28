@@ -252,24 +252,27 @@ fn http_json(port: u16, method: &str, path: &str, body: Option<&Value>) -> (u16,
 
 #[test]
 fn catalog_and_safe_zip_security_guards() {
-    // 1. Catalog has all 7 verified CC0-1.0 packs.
+    // 1. Catalog has 9 verified free packs (v1.34 adds 3 Modern UI / motion-graphics packs first,
+    //    drops the broken arcade-fanfare-pack).
     let catalog = cc0_pack_catalog();
-    assert_eq!(catalog.len(), 7);
+    assert_eq!(catalog.len(), 9);
     let ids: Vec<&str> = catalog.iter().map(|p| p.id).collect();
     assert_eq!(
         ids,
         vec![
+            "motion-ui-swishes",
+            "modern-interface-sfx",
+            "modern-ui-pack-1",
             "kenney-ui-sfx",
             "kenney-casino-cards",
             "kenney-digital-sfx",
             "rpg-combat-pack",
             "rpg-fantasy-80",
             "general-game-100",
-            "arcade-fanfare-pack",
         ]
     );
     for pack in catalog {
-        assert_eq!(pack.license, "CC0-1.0");
+        assert!(pack.license == "CC0-1.0" || pack.license == "CC-BY-3.0");
         assert!(pack.url.starts_with("https://opengameart.org/"));
     }
 
@@ -571,6 +574,7 @@ fn audio_presets_runner_installer_and_audio_b64_path_decode() {
         "stable-audio-open-cli",
         "ace-step-local-http",
         "google-gemini-lyria-http",
+        "youtube-nocopyright-music-cli",
     ] {
         let preset = audio_presets
             .iter()
@@ -585,7 +589,7 @@ fn audio_presets_runner_installer_and_audio_b64_path_decode() {
             "preset '{expected}' missing model_size"
         );
     }
-    assert_eq!(audio_presets.len(), 8);
+    assert_eq!(audio_presets.len(), 9);
 
     // 2. Old adapters.json without new optional metadata fields loads cleanly.
     let data_dir = temp_dir("adapters-compat");

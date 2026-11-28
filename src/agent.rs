@@ -250,7 +250,8 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|icons_sheet|rarity_frames_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
 - {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
-- {{\"tool\": \"sfx_pack_list\", \"args\": {{}}}} / {{\"tool\": \"sfx_pack_install\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\"}}}} / {{\"tool\": \"sfx_pack_search\", \"args\": {{\"query\": \"click\", \"pack_id\": \"...?\", \"limit\": 20}}}} / {{\"tool\": \"sfx_pack_use\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\", \"clip\": \"...\", \"out_name\": \"ui_click\"}}}} browses, installs, searches, and masters free CC0-1.0 SFX clips into 44.1kHz WAV in assets/audio/\n\
+- {{\"tool\": \"sfx_pack_list\", \"args\": {{}}}} / {{\"tool\": \"sfx_pack_install\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\"}}}} / {{\"tool\": \"sfx_pack_search\", \"args\": {{\"query\": \"click\", \"pack_id\": \"...?\", \"limit\": 20}}}} / {{\"tool\": \"sfx_pack_use\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\", \"clip\": \"...\", \"out_name\": \"ui_click\"}}}} browses, installs, searches, and masters free SFX clips (trending Modern UI / motion-graphics packs first) into 44.1kHz WAV in assets/audio/\n\
+- {{\"tool\": \"music_search\", \"args\": {{\"genre\": \"jazz-rap|lofi|trap|carti-type-beat|pluggnb|anime-hiphop|synthwave\", \"query\": \"...?\", \"limit\": 10}}}} / {{\"tool\": \"music_import\", \"args\": {{\"url\": \"https://www.youtube.com/watch?v=<id>\", \"genre\": \"lofi\", \"out_name\": \"lobby_music\", \"max_duration_s\": 90}}}} sources copyright-free YouTube background music (zero dubstep) and masters a loop-ready 44.1kHz mono WAV + .source.json credit receipt in assets/audio/; use this for BGM instead of synthesized/oscillator music\n\
 - {{\"tool\": \"adapter_list\", \"args\": {{\"capability\": \"image_gen|reference_search|mesh_gen|audio_gen|custom\"}}}} lists installed CLI/HTTP tool adapters and availability\n\
 - {{\"tool\": \"adapter_invoke\", \"args\": {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}}} runs an installed CLI/HTTP adapter (or capability priority chain)\n\
 - {{\"tool\": \"opencloud_status\", \"args\": {{}}}} / {{\"tool\": \"creator_hub_status\", \"args\": {{\"check_login\": true, \"save_creator\": true}}}} checks Open Cloud key/creator & open loopback Chromium Creator Hub status\n\
@@ -317,6 +318,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - ui_kit_presets {{}} / ui_kit_generate {{\"layout\":\"skybridge-crest\",\"skin\":\"obsidian-prism\",\"sheet\":\"chrome_sheet\"}} (9-slice PNGs + BlurEffect + >=5.25:1 + 844x390 safe)\n\
 - mesh_generate {{\"name\":\"Prop\",\"description\":\"...\",\"script\":\"...\"}} / audio_generate {{\"name\":\"Sfx\",\"preset\":\"...\",\"recipe\":{{...}},\"duration_ms\":1200}}\n\
 - sfx_pack_list {{}} / sfx_pack_install {{\"pack_id\":\"kenney-ui-sfx\"}} / sfx_pack_search {{\"query\":\"click\",\"limit\":20}} / sfx_pack_use {{\"pack_id\":\"...\",\"clip\":\"...\",\"out_name\":\"...\"}} (free CC0-1.0 SFX packs -> 44.1kHz WAV)\n\
+- music_search {{\"genre\":\"lofi\"}} / music_import {{\"url\":\"...\"}} (copyright-free BGM)\n\
 - adapter_list {{\"capability\":\"...?\"}} / adapter_invoke {{\"capability\":\"...\",\"adapter_id\":\"...?\",\"params\":{{...}}}}\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\":true,\"save_creator\":true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
 - assets_authorise {{\"paths\":[...]}} / assets_upload {{\"paths\":[...],\"max_audio_uploads\":5}} / assets_moderation_poll {{}} / assets_codegen {{\"studio_local_fallback\":true}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
@@ -552,6 +554,8 @@ pub struct AgentHooks {
     pub sfx_pack_install: Option<HookFn>,
     pub sfx_pack_search: Option<HookFn>,
     pub sfx_pack_use: Option<HookFn>,
+    pub music_search: Option<HookFn>,
+    pub music_import: Option<HookFn>,
     pub assets_upload: Option<HookFn>,
     pub opencloud_status: Option<HookFn>,
     pub creator_hub_status: Option<HookFn>,
@@ -3091,6 +3095,7 @@ impl Agent {
                                         | "audio_generate"
                                         | "sfx_pack_install"
                                         | "sfx_pack_use"
+                                        | "music_import"
                                         | "assets_upload"
                                         | "assets_moderation_poll"
                                         | "studio_stage_content"
@@ -3572,6 +3577,7 @@ impl Agent {
                                 | "audio_generate"
                                 | "sfx_pack_install"
                                 | "sfx_pack_use"
+                                | "music_import"
                                 | "assets_upload"
                                 | "assets_moderation_poll"
                                 | "studio_stage_content"
@@ -5328,6 +5334,43 @@ impl Agent {
                 transcript.push(format!("tool sfx_pack_use -> {text}"));
                 thread.push(format!("Mastered CC0 SFX clip to {out_path}."));
                 Ok(format!("tool_result: sfx_pack_use: {text}"))
+            }
+            "music_search" => {
+                let res = if let Some(hook) = &self.hooks.music_search {
+                    hook(args)?
+                } else {
+                    let genre = args.get("genre").and_then(|v| v.as_str());
+                    let query = args
+                        .get("query")
+                        .or_else(|| args.get("q"))
+                        .and_then(|v| v.as_str());
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                    crate::audio_library::search_youtube_music(genre, query, limit)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool music_search -> {text}"));
+                Ok(format!("tool_result: music_search: {text}"))
+            }
+            "music_import" => {
+                let res = if let Some(hook) = &self.hooks.music_import {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    let proj = self.effective_project_root();
+                    crate::audio_library::import_youtube_music(&data_dir, proj.as_deref(), args)?
+                };
+                let text = res.to_string();
+                let out_path = res
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("assets/audio/music.wav");
+                let credit = res
+                    .get("credit_line")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                transcript.push(format!("tool music_import -> {text}"));
+                thread.push(format!("Imported copyright-free music to {out_path} ({credit})."));
+                Ok(format!("tool_result: music_import: {text}"))
             }
             "adapter_list" => {
                 let res = if let Some(hook) = &self.hooks.adapter_list {
