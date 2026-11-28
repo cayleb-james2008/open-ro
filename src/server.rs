@@ -987,6 +987,9 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path == "/api/library/sfx-packs"
         || clean_path.starts_with("/api/library/sfx-packs/")
         || clean_path == "/api/library/audio-runner/install"
+        || clean_path == "/api/library/music"
+        || clean_path.starts_with("/api/library/music/")
+        || clean_path == "/api/library/music-runner/install"
         || clean_path == "/api/tools/image/process"
         || clean_path == "/api/monetization/pack"
         || clean_path == "/api/studio/monetization-audit"
@@ -1589,6 +1592,30 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
                 .and_then(|id| resolve_project_dir(&srv, id))
                 .or_else(|| srv.active_project_dir());
             crate::audio_library::use_sfx_clip(data_dir, proj.as_deref(), args)
+        }));
+    }
+    if agent.hooks.music_search.is_none() {
+        agent.hooks.music_search = Some(Arc::new(move |args| {
+            let genre = args.get("genre").and_then(|v| v.as_str());
+            let query = args
+                .get("query")
+                .or_else(|| args.get("q"))
+                .and_then(|v| v.as_str());
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            crate::audio_library::search_youtube_music(genre, query, limit)
+        }));
+    }
+    if agent.hooks.music_import.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.music_import = Some(Arc::new(move |args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let proj = args
+                .get("project")
+                .or_else(|| args.get("project_id"))
+                .and_then(|v| v.as_str())
+                .and_then(|id| resolve_project_dir(&srv, id))
+                .or_else(|| srv.active_project_dir());
+            crate::audio_library::import_youtube_music(data_dir, proj.as_deref(), args)
         }));
     }
     if agent.hooks.adapter_list.is_none() {
@@ -3095,6 +3122,7 @@ fn handle(
                     "version": env!("CARGO_PKG_VERSION"),
                     "cc0_sfx_library": true,
                     "audio_presets_tiered": true,
+                    "youtube_music_adapter": true,
                 })
                 .to_string()
                 .into_bytes()
@@ -3113,6 +3141,7 @@ fn handle(
                     "audio_synth": true,
                     "cc0_sfx_library": true,
                     "audio_presets_tiered": true,
+                    "youtube_music_adapter": true,
                     "studio_embed": true,
                     "market_taste_api": true,
                 })
@@ -3350,6 +3379,7 @@ fn handle(
                     "library_api": true,
                     "cc0_sfx_library": true,
                     "audio_presets_tiered": true,
+                    "youtube_music_adapter": true,
                     "market_taste_api": true,
                     "active_niche": active_niche,
                     "embedded_running": embed_running,
@@ -9017,7 +9047,10 @@ fn try_route_audio_library(
 ) -> bool {
     let is_sfx = path == "/api/library/sfx-packs"
         || path.starts_with("/api/library/sfx-packs/")
-        || path == "/api/library/audio-runner/install";
+        || path == "/api/library/audio-runner/install"
+        || path == "/api/library/music"
+        || path.starts_with("/api/library/music/")
+        || path == "/api/library/music-runner/install";
     if !is_sfx {
         return false;
     }
@@ -9025,7 +9058,7 @@ fn try_route_audio_library(
         respond_err(
             stream,
             "403 Forbidden",
-            "CC0 SFX library and audio runner routes are only allowed from this machine (loopback)",
+            "CC0 SFX library, music sourcing, and audio runner routes are only allowed from this machine (loopback)",
         );
         return true;
     }
@@ -9214,7 +9247,86 @@ fn try_route_audio_library(
         return true;
     }
 
+    if req.method == "GET" && path == "/api/library/music/genres" {
+        let body = crate::audio_library::music_genres_json(Some(data_dir));
+        respond_json(stream, "200 OK", &body);
+        return true;
+    }
+
+    if req.method == "POST" && path == "/api/library/music/search" {
+        let body: Value = match parse_optional_json_object(&req.body) {
+            Some(v) => v,
+            None => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        };
+        let genre = body.get("genre").and_then(Value::as_str);
+        let query = body
+            .get("query")
+            .or_else(|| body.get("q"))
+            .and_then(Value::as_str);
+        let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+        match crate::audio_library::search_youtube_music(genre, query, limit) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err(e) => respond_err(stream, music_error_status(&e), &e),
+        }
+        return true;
+    }
+
+    if req.method == "POST" && path == "/api/library/music/import" {
+        let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        };
+        let _busy = BusyGuard::new(&shared.busy);
+        let project_root = body
+            .get("project")
+            .or_else(|| body.get("project_id"))
+            .and_then(Value::as_str)
+            .and_then(|id| resolve_project_dir(shared, id))
+            .or_else(|| shared.active_project_dir());
+        match crate::audio_library::import_youtube_music(data_dir, project_root.as_deref(), &body) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err(e) => respond_err(stream, music_error_status(&e), &e),
+        }
+        return true;
+    }
+
+    if req.method == "POST" && path == "/api/library/music-runner/install" {
+        match crate::audio_library::install_yt_music_runner(data_dir) {
+            Ok(v) => {
+                invalidate_library_cache(shared);
+                respond_json(stream, "200 OK", &v);
+            }
+            Err(e) => respond_err(stream, "500 Internal Server Error", &e),
+        }
+        return true;
+    }
+
     false
+}
+
+fn parse_optional_json_object(raw: &[u8]) -> Option<Value> {
+    if raw.iter().all(|b| b.is_ascii_whitespace()) {
+        return Some(json!({}));
+    }
+    serde_json::from_slice::<Value>(raw).ok().filter(Value::is_object)
+}
+
+fn music_error_status(e: &str) -> &'static str {
+    if e.contains("not found on PATH") {
+        "503 Service Unavailable"
+    } else if e.contains("timed out") {
+        "504 Gateway Timeout"
+    } else if e.contains("download failed") || e.contains("search failed") || e.contains("produced no audio") {
+        "502 Bad Gateway"
+    } else {
+        "400 Bad Request"
+    }
 }
 
 fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {

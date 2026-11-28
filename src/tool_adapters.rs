@@ -1077,7 +1077,8 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
     ]
 }
 
-/// Optional 1-click installable adapter presets (ComfyUI, fal.ai Flux, Meshy, Hardware-Tiered Audio & ElevenLabs/Lyria).
+/// Optional 1-click installable adapter presets (ComfyUI, fal.ai Flux, Meshy, YouTube copyright-free music,
+/// Hardware-Tiered SFX generators & ElevenLabs/Lyria).
 pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
     vec![
         ToolAdapter {
@@ -1326,10 +1327,47 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
             install_hint: None,
         },
         ToolAdapter {
+            id: "youtube-nocopyright-music-cli".into(),
+            name: "YouTube Copyright-Free Music (yt-dlp)".into(),
+            capability: "audio_gen".into(),
+            description: "Background music sourcing: imports copyright-free / royalty-free YouTube tracks in Roblox-trending genres (jazz-rap, lofi, trap, carti-type-beat, pluggnb, anime-hiphop, synthwave; zero dubstep) and masters loop-ready 44.1 kHz PCM16 mono WAV with loudnorm + fades and a license/credit receipt.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 5,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "openro-yt-music".into(),
+                argv: vec![
+                    "--download".into(),
+                    "{{arg:youtube_url}}".into(),
+                    "--query".into(),
+                    "{{?prompt}}".into(),
+                    "--genre".into(),
+                    "{{?arg:genre}}".into(),
+                    "--max-duration".into(),
+                    "{{?duration_s}}".into(),
+                    "--out".into(),
+                    "{{out_path}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 300,
+                output_mode: "file".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--check".into()],
+            }),
+            http: None,
+            hardware_tier: Some("youtube-nocopyright".into()),
+            model_size: Some("YouTube Copyright-Free · yt-dlp".into()),
+            install_hint: Some("Requires yt-dlp + ffmpeg; click Install Music Runner".into()),
+        },
+        ToolAdapter {
             id: "elevenlabs-sfx-http".into(),
             name: "ElevenLabs Sound Effects API".into(),
             capability: "audio_gen".into(),
-            description: "Prompt-to-SFX audio generation via ElevenLabs Sound Generation API.".into(),
+            description: "SFX generator: prompt-to-SFX one-shots via ElevenLabs Sound Generation API (use youtube-nocopyright-music-cli for background music).".into(),
             transport: "http".into(),
             enabled: true,
             priority: 20,
@@ -1518,7 +1556,7 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
             id: "stable-audio-open-cli".into(),
             name: "Stable Audio Open 1.0 (Large GPU)".into(),
             capability: "audio_gen".into(),
-            description: "Studio-grade 44.1 kHz SFX & music cues (~1.05B) via openro-audio-gen for 16 GB+ GPUs.".into(),
+            description: "SFX generator: studio-grade 44.1 kHz SFX & short stingers (~1.05B) via openro-audio-gen for 16 GB+ GPUs.".into(),
             transport: "cli".into(),
             enabled: true,
             priority: 25,
@@ -1557,7 +1595,7 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
             id: "ace-step-local-http".into(),
             name: "ACE-Step 1.5 (Local HTTP)".into(),
             capability: "audio_gen".into(),
-            description: "Local ACE-Step 1.5 HTTP audio & soundtrack server on 127.0.0.1:8001.".into(),
+            description: "SFX generator: local ACE-Step 1.5 HTTP server on 127.0.0.1:8001 for short stingers & jingles (use youtube-nocopyright-music-cli for background music).".into(),
             transport: "http".into(),
             enabled: true,
             priority: 26,
@@ -1591,7 +1629,7 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
             id: "google-gemini-lyria-http".into(),
             name: "Google Gemini Lyria Audio".into(),
             capability: "audio_gen".into(),
-            description: "Google Gemini Lyria audio clip generation via Interactions API (decoded & normalized to 44.1 kHz WAV).".into(),
+            description: "SFX generator: Google Gemini Lyria short audio clips & stingers via Interactions API (decoded & normalized to 44.1 kHz WAV).".into(),
             transport: "http".into(),
             enabled: true,
             priority: 27,

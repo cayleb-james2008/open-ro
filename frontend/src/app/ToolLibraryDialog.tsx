@@ -57,6 +57,7 @@ import {
 } from "./marketTaste";
 import { call, enc } from "./ship/api";
 import { AdaptersPanel } from "./AdaptersPanel";
+import { MusicSourcingSection } from "./MusicSourcingSection";
 
 type LibraryTab = "installed" | "installable" | "sfx-packs" | "adapters" | "market" | "generators";
 
@@ -592,12 +593,14 @@ function SfxPacksTab({
 
   return (
     <div data-sfx-packs-panel className="flex flex-col gap-3">
+      <MusicSourcingSection open={open} projectId={projectId} onTrackAdded={onSfxAdded} />
+
       {/* Header Summary + Refresh */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <Music className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-          <h3 className="text-sm font-medium text-ink">Free CC0-1.0 SFX Packs</h3>
-          <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs text-tag-mint-fg">CC0-1.0</Pill>
+          <h3 className="text-sm font-medium text-ink">Modern UI &amp; Motion-Graphics SFX Packs</h3>
+          <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs text-tag-mint-fg">CC0 &amp; CC-BY</Pill>
           {!unavailable && (
             <>
               <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
@@ -780,16 +783,18 @@ function SfxPacksTab({
         </section>
       )}
 
-      {/* 7 Free CC0-1.0 Packs Catalog */}
+      {/* Free SFX Packs Catalog: modern UI & motion-graphics packs first, then game packs */}
       {packs.length > 0 && (
         <div data-sfx-pack-list className="flex flex-col gap-2.5">
           {packs.map((pack) => {
             const busy = busyPackId === pack.id;
             const clipCount = pack.installed ? (pack.installed_clips ?? pack.clip_count) : pack.clip_count;
+            const modernUi = Boolean(pack.tags?.includes("motion-graphics"));
             return (
               <article
                 key={pack.id}
                 data-sfx-pack={pack.id}
+                data-sfx-modern={modernUi ? "" : undefined}
                 className="flex flex-col gap-2 rounded-card border border-hairline bg-board/45 p-3.5"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -800,6 +805,9 @@ function SfxPacksTab({
                         {pack.license || "CC0-1.0"}
                       </Pill>
                       <span className="text-xs text-ink-2">by {pack.author}</span>
+                      {modernUi && (
+                        <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">Modern UI</Pill>
+                      )}
                       <Pill className="bg-surface px-2 py-0.5 text-xs tabular-nums text-ink-2">
                         {clipCount} clips
                       </Pill>
@@ -858,7 +866,7 @@ function SfxPacksTab({
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <Cpu className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-              <h4 className="text-sm font-medium text-ink">Local &amp; Cloud Audio Models</h4>
+              <h4 className="text-sm font-medium text-ink">Optional Custom SFX Generators</h4>
               {runnerInstalled && (
                 <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">
                   <PillIndicator variant="success" />
@@ -867,7 +875,7 @@ function SfxPacksTab({
               )}
             </div>
             <p className="text-xs leading-relaxed text-ink-2">
-              Install the unified local neural audio runner or pick a hardware-tiered local CLI, local HTTP, or cloud audio preset in Adapters.
+              SFX only. Background music comes from Copyright-Free Music (YouTube) above. Install the unified local audio runner or pick a hardware-tiered local CLI, local HTTP, or cloud SFX preset in Adapters.
             </p>
           </div>
 
@@ -1169,10 +1177,11 @@ export function ToolLibraryDialog({
                 <SegmentedControlItem
                   data-checked={tab === "sfx-packs" ? "" : undefined}
                   aria-pressed={tab === "sfx-packs"}
+                  data-sfx-packs-tab
                   onClick={() => setTab("sfx-packs")}
                   className="max-md:!h-11 max-md:px-2.5"
                 >
-                  Free CC0 SFX
+                  Audio &amp; Music
                 </SegmentedControlItem>
                 <SegmentedControlItem
                   data-checked={tab === "adapters" ? "" : undefined}

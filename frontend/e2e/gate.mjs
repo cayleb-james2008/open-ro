@@ -1308,16 +1308,52 @@ try {
   const sfxProbeStatus = await fetch(`${BASE}api/library/sfx-packs`).then((r) => r.status).catch(() => 404);
   const sfxLive = sfxProbeStatus === 200;
   const sfxRoutePatterns = [/\/api\/library\/sfx-packs(\/|\?|$)/, "**/api/library/audio-runner/install"];
+  // Wave 11: Audio & Music tab -> Copyright-Free YouTube music sourcing + modern UI / motion-graphics packs
+  const musicProbeStatus = await fetch(`${BASE}api/library/music/genres`).then((r) => r.status).catch(() => 404);
+  const musicLive = musicProbeStatus === 200;
+  const musicRoutePattern = /\/api\/library\/music(-runner)?(\/|\?|$)/;
+  if (!musicLive) {
+    const mockTracks = [
+      { id: "aaaaaaaaaaa", title: "Smoke Break (Jazz Rap Instrumental)", channel: "Dusty Keys", duration_s: 154, youtube_url: "https://www.youtube.com/watch?v=aaaaaaaaaaa", genre: "jazz-rap", license_status: "free_for_profit", credit_line: "Prod. Dusty Keys" },
+      { id: "bbbbbbbbbbb", title: "Rooftop Study Session", channel: "StreamBeats by Harris Heller", duration_s: 121, youtube_url: "https://www.youtube.com/watch?v=bbbbbbbbbbb", genre: "jazz-rap", license_status: "streambeats_dmca_free", credit_line: "StreamBeats by Harris Heller" },
+    ];
+    await p.route(musicRoutePattern, async (route) => {
+      const reqUrl = new URL(route.request().url());
+      const method = route.request().method();
+      const json = (body) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+      if (reqUrl.pathname === "/api/library/music/genres" && method === "GET") {
+        await json({ ok: true, genres: [{ id: "jazz-rap", label: "Jazz Rap / Boom Bap" }, { id: "lofi", label: "Lo-Fi Chill" }] });
+        return;
+      }
+      if (reqUrl.pathname === "/api/library/music/search" && method === "POST") {
+        await json({ ok: true, genre: "jazz-rap", tracks: mockTracks });
+        return;
+      }
+      if (reqUrl.pathname === "/api/library/music/import" && method === "POST") {
+        const body = route.request().postDataJSON() || {};
+        const name = `${String(body.out_name || "menu_music").replace(/\.wav$/, "")}.wav`;
+        await json({ ok: true, path: `assets/audio/${name}`, filename: name, sample_rate: 44100, credit_line: body.credit_line || "Prod. Dusty Keys" });
+        return;
+      }
+      if (reqUrl.pathname === "/api/library/music-runner/install" && method === "POST") {
+        await json({ ok: true, path: "/tmp/openro-yt-music", install_hint: "Requires yt-dlp and ffmpeg on PATH." });
+        return;
+      }
+      await json({});
+    });
+  }
   if (!sfxLive) {
     const installedSet = new Set();
     const mockCatalog = [
+      { id: "motion-ui-swishes", name: "Motion Graphics Swishes & Whooshes (CC0)", author: "artisticdude", license: "CC0-1.0", description: "Swishes and whooshes for transitions and card flips.", tags: ["motion-graphics", "whoosh", "ui"], clip_count: 40 },
+      { id: "modern-interface-sfx", name: "Modern Interface Starter Pack (Clicks, Pops & Taps)", author: "p0ss", license: "CC0-1.0", description: "Modern UI clicks, pops, and taps.", tags: ["ui", "motion-graphics", "modern"], clip_count: 30 },
+      { id: "modern-ui-pack-1", name: "UI Pack Vol. 1 (Menus, Chimes & Alerts)", author: "junggle", license: "CC-BY-3.0", description: "Menu, chime, and alert sounds.", tags: ["ui", "motion-graphics", "modern"], clip_count: 24 },
       { id: "kenney-ui-sfx", name: "Kenney UI Sound Effects (51 clips)", author: "Kenney", license: "CC0-1.0", description: "51 UI clicks, switches, and rollovers.", clip_count: 51 },
       { id: "kenney-casino-cards", name: "Kenney Card & Casino Audio (54 clips)", author: "Kenney", license: "CC0-1.0", description: "54 card deal, flip, and shuffle SFX.", clip_count: 54 },
       { id: "kenney-digital-sfx", name: "Kenney Digital & Sci-Fi SFX (63 clips)", author: "Kenney", license: "CC0-1.0", description: "63 retro lasers, powerups, and chimes.", clip_count: 63 },
       { id: "rpg-combat-pack", name: "RPG Combat & Foley Pack", author: "Artisticdude", license: "CC0-1.0", description: "Swords, impacts, spells, and foley.", clip_count: 42 },
       { id: "rpg-fantasy-80", name: "80 CC0 RPG Fantasy SFX", author: "Rubberduck", license: "CC0-1.0", description: "80 fantasy UI, inventory, and spell SFX.", clip_count: 80 },
       { id: "general-game-100", name: "100 CC0 Universal Game SFX", author: "Rubberduck", license: "CC0-1.0", description: "100 general arcade, menu, and hit SFX.", clip_count: 100 },
-      { id: "arcade-fanfare-pack", name: "Level Up, Power Up & Coin Fanfares (13 clips)", author: "Wobbleboxx", license: "CC0-1.0", description: "13 retro fanfares and coin stingers.", clip_count: 13 },
     ];
     let mockRunnerInstalled = false;
     const buildSfxSnap = () => ({
@@ -1416,12 +1452,57 @@ try {
   await p.locator('button[aria-label="Open Tool Library"]').click();
   const toolLibDlg = p.locator("[data-tool-library-dialog]");
   await toolLibDlg.waitFor({ state: "visible", timeout: 8000 });
-  await toolLibDlg.getByRole("button", { name: "Free CC0 SFX", exact: true }).click();
+  await toolLibDlg.getByRole("button", { name: "Audio & Music", exact: true }).click();
   await toolLibDlg.locator("[data-sfx-packs-panel]").waitFor({ state: "visible", timeout: 8000 });
   await toolLibDlg.locator("[data-sfx-pack]").first().waitFor({ state: "visible", timeout: 8000 });
   const sfxPackCount = await toolLibDlg.locator("[data-sfx-pack]").count();
-  const audioCardVisible = await toolLibDlg.locator("[data-audio-models-card]").isVisible();
-  check("Tool Library Free CC0 SFX tab lists all 7 CC0-1.0 packs & audio models card", sfxPackCount === 7 && audioCardVisible, `packs=${sfxPackCount}`);
+  const audioCardText = await toolLibDlg.locator("[data-audio-models-card]").innerText();
+  const modernPackCount = await toolLibDlg.locator("[data-sfx-modern]").count();
+  const sfxPanelText = await toolLibDlg.locator("[data-sfx-packs-panel]").innerText();
+  // Live v1.34+ servers ship 9 packs incl. 3 modern UI packs; a pre-v1.34 live server still ships the 7 game packs.
+  const modernOk = modernPackCount === 3
+    ? sfxPanelText.includes("Motion Graphics Swishes") && sfxPanelText.includes("Modern UI Interface Starter Pack") && sfxPanelText.includes("UI Sound Effects Pack Vol. 1")
+    : sfxLive && modernPackCount === 0;
+  check(
+    "Tool Library Audio & Music tab lists the SFX pack catalog (9 with modern UI & motion-graphics packs) & Optional Custom SFX Generators card",
+    (sfxLive ? sfxPackCount >= 7 : sfxPackCount === 9) && modernOk && audioCardText.includes("Optional Custom SFX Generators"),
+    `packs=${sfxPackCount} modern=${modernPackCount}`,
+  );
+
+  const musicSection = toolLibDlg.locator("[data-music-section]");
+  await musicSection.waitFor({ state: "visible", timeout: 8000 });
+  const musicText = await musicSection.innerText();
+  const genrePillsOk = (await Promise.all(["Jazz Rap", "Lo-Fi", "Trap", "Carti Type Beat", "PluggnB", "Anime Hip-Hop", "Synthwave"].map((g) => musicSection.getByRole("button", { name: g, exact: true }).isVisible()))).every(Boolean);
+  check(
+    "Audio & Music tab shows Copyright-Free Music (YouTube) section with 7 genre pills, filter, Find Tracks, Install Music Runner & dubstep note",
+    musicText.includes("Copyright-Free Music (YouTube)") &&
+      genrePillsOk &&
+      musicText.includes("Dubstep automatically filtered out") &&
+      (await musicSection.locator('input[aria-label="Filter music search"]').isVisible()) &&
+      (await musicSection.getByRole("button", { name: "Find Tracks" }).isVisible()) &&
+      (await musicSection.getByRole("button", { name: "Install Music Runner" }).isVisible()),
+  );
+  if (!musicLive) {
+    await musicSection.getByRole("button", { name: "Trap", exact: true }).click();
+    await musicSection.getByRole("button", { name: "Find Tracks" }).click();
+    await musicSection.locator("[data-music-track]").first().waitFor({ state: "visible", timeout: 5000 });
+    const trackText = await musicSection.locator("[data-music-track]").first().innerText();
+    await musicSection.locator('input[aria-label="Cue name for Smoke Break (Jazz Rap Instrumental)"]').fill("menu_music");
+    await musicSection.getByRole("button", { name: "Import to Project WAV" }).first().click();
+    await musicSection.locator("[data-music-import-result]").waitFor({ state: "visible", timeout: 5000 });
+    const importText = await musicSection.locator("[data-music-import-result]").innerText();
+    check(
+      "Copyright-free music search lists title, producer, mm:ss duration & license badge, and 1-click Import to Project WAV",
+      trackText.includes("Smoke Break") && trackText.includes("Dusty Keys") && trackText.includes("2:34") && trackText.includes("Free for Profit") && importText.includes("menu_music.wav") && importText.includes("Prod. Dusty Keys"),
+      `${trackText.slice(0, 80)} | ${importText.slice(0, 60)}`,
+    );
+    await musicSection.getByRole("button", { name: "Install Music Runner" }).click();
+    await musicSection.getByText("Runner Ready").waitFor({ state: "visible", timeout: 5000 });
+    check("Install Music Runner reports Runner Ready", true);
+  } else {
+    const genresStatus = await fetch(`${BASE}api/library/music/genres`).then((r) => r.status).catch(() => 0);
+    check("Live GET /api/library/music/genres responds HTTP 200", genresStatus === 200, `genres=${genresStatus}`);
+  }
 
   if (!sfxLive) {
     await toolLibDlg.locator('[data-sfx-install="kenney-ui-sfx"]').click();
@@ -1451,7 +1532,7 @@ try {
   await toolLibDlg.locator("[data-audio-runner-result]").waitFor({ state: "visible", timeout: 8000 });
   check("Local Audio Runner quick-setup installs cleanly", await toolLibDlg.locator("[data-audio-runner-result]").isVisible());
 
-  await assertLayoutInvariants(p, "1440x900 Light Tool Library Free CC0 SFX");
+  await assertLayoutInvariants(p, "1440x900 Light Tool Library Audio & Music");
 
   // Direct button to switch to Adapters tab filtered on Audio + verify custom HTTP audio_b64_path hint
   await toolLibDlg.locator("[data-open-audio-adapters]").click();
@@ -1477,17 +1558,19 @@ try {
   await assertLayoutInvariants(p, "1440x900 Dark");
   await p.screenshot({ path: `${OUT}/built-desktop-1440-dark.png` });
 
-  // Verify Free CC0 SFX tab in Dark theme as well
+  // Verify Audio & Music tab in Dark theme as well
   await p.locator('button[aria-label="Open Tool Library"]').click();
   await toolLibDlg.waitFor({ state: "visible", timeout: 8000 });
-  await toolLibDlg.getByRole("button", { name: "Free CC0 SFX", exact: true }).click();
+  await toolLibDlg.getByRole("button", { name: "Audio & Music", exact: true }).click();
   await toolLibDlg.locator("[data-sfx-pack]").first().waitFor({ state: "visible", timeout: 8000 });
-  await assertLayoutInvariants(p, "1440x900 Dark Tool Library Free CC0 SFX");
+  await toolLibDlg.locator("[data-music-genre]").first().waitFor({ state: "visible", timeout: 8000 });
+  await assertLayoutInvariants(p, "1440x900 Dark Tool Library Audio & Music");
   await toolLibDlg.locator('button[aria-label="Close Tool Library"]').click();
   await toolLibDlg.waitFor({ state: "hidden", timeout: 5000 });
   if (!sfxLive) {
     for (const pat of sfxRoutePatterns) await p.unroute(pat);
   }
+  if (!musicLive) await p.unroute(musicRoutePattern);
 
   // 1280x800 laptop viewport Dark & Light
   await p.setViewportSize({ width: 1280, height: 800 });

@@ -696,8 +696,9 @@ impl LibraryManager {
                 (
                     true,
                     format!(
-                        "CC0-1.0 SFX pack catalog ready ({catalog_count} free public-domain packs; {installed_packs} installed, {installed_clips} clips indexed; local neural runner {}).",
-                        if runner_ready { "installed" } else { "not installed" }
+                        "Free SFX pack catalog ready ({catalog_count} packs incl. Modern UI / motion-graphics; {installed_packs} installed, {installed_clips} clips indexed; local neural runner {}; copyright-free music runner {}).",
+                        if runner_ready { "installed" } else { "not installed" },
+                        if crate::audio_library::yt_music_runner_path(&self.data_dir).is_file() { "installed" } else { "not installed" }
                     ),
                 )
             }
@@ -1603,7 +1604,7 @@ static PACK_SPECS: [PackSpec; 9] = [
         category: "Audio & SFX",
         description: "Unlock instant offline 44.1 kHz PCM16 .wav sound synthesis plus hardware-tiered local models (AudioLDM-S, Stable Audio Small/Open, TangoFlux, AudioLDM 2, ACE-Step 1.5) and ElevenLabs / Google Gemini Lyria APIs.",
         default_installed: false,
-        version: "1.33.0",
+        version: "1.34.0",
         default_provider: "openro-synth-local",
         tools: &[
             "generate_audio_sfx",
@@ -1623,33 +1624,40 @@ static PACK_SPECS: [PackSpec; 9] = [
         ],
         env_vars: &["ELEVENLABS_API_KEY", "GEMINI_API_KEY"],
         skill_summary: "Synthesize royalty-free 44.1 kHz PCM16 .wav SFX cues locally, run hardware-tiered open-weights audio models, or connect ElevenLabs/Google Gemini Lyria.",
-        skill_markdown: "- Use `POST /api/tools/audio/generate` (`summon_roll`, `mythic_fanfare`, `battle_crit`, `potion_drink`, `ui_click`, `level_up`, or custom `layers`) to generate ready-to-upload 44.1 kHz PCM16 `.wav` cues immediately offline, or install a tiered local (`openro-audio-gen`) or cloud (`elevenlabs-sfx-http`, `google-gemini-lyria-http`) `audio_gen` adapter.\n\
+        skill_markdown: "- Use `POST /api/tools/audio/generate` (`summon_roll`, `mythic_fanfare`, `battle_crit`, `potion_drink`, `ui_click`, `level_up`, or custom `layers`) to generate ready-to-upload 44.1 kHz PCM16 `.wav` SFX cues immediately offline, or install a tiered local (`openro-audio-gen`) or cloud (`elevenlabs-sfx-http`, `google-gemini-lyria-http`) `audio_gen` SFX generator adapter.\n\
+- Local/cloud generators are for SFX one-shots and short stingers only. For background music use the `youtube-nocopyright-music-cli` adapter or `music_search` / `music_import` (Roblox-trending `jazz-rap`, `lofi`, `trap`, `carti-type-beat`, `pluggnb`, `anime-hiphop`, `synthwave`; ZERO dubstep, ZERO local oscillator / AI BGM drones).\n\
 - Register Sound instances under `SoundService` or part attachments with normalized Volume (`0.5..0.85`).",
     },
     PackSpec {
         id: "cc0-sfx-packs",
-        name: "Free CC0-1.0 SFX Pack Library",
+        name: "Free SFX Packs & Copyright-Free Music",
         category: "Audio",
-        description: "Download, search, preview, layer, and master 7 verified 100% free CC0-1.0 game SFX packs (Kenney UI/Cards/Digital, RPG Combat & Fantasy, Universal Game SFX, Arcade Fanfares) into 44.1 kHz PCM16 mono WAV.",
+        description: "Download, search, preview, layer, and master 9 verified free SFX packs (trending Modern UI / Motion-Graphics swishes, clicks & chimes first, then Kenney UI/Cards/Digital, RPG Combat & Fantasy, Universal Game SFX) into 44.1 kHz PCM16 mono WAV, plus copyright-free YouTube background music in Roblox-trending genres.",
         default_installed: false,
-        version: "1.33.0",
+        version: "1.34.0",
         default_provider: "openro-cc0-sfx-local",
         tools: &[
             "sfx_pack_list",
             "sfx_pack_install",
             "sfx_pack_search",
             "sfx_pack_use",
+            "music_search",
+            "music_import",
         ],
         capabilities: &[
             "cc0-sfx-packs",
+            "motion-graphics-ui-sfx",
             "safe-zip-extract",
             "ffmpeg-wav-mastering",
             "sfx-layer-mixing",
+            "youtube-nocopyright-music",
         ],
         env_vars: &[],
-        skill_summary: "Browse and install 7 verified CC0-1.0 public-domain SFX packs, search clips by tag/filename, and master single or multi-layered clips to 44.1 kHz mono WAV in assets/audio/.",
-        skill_markdown: "- Call `sfx_pack_list` to see the 7 verified CC0-1.0 SFX packs (`kenney-ui-sfx`, `kenney-casino-cards`, `kenney-digital-sfx`, `rpg-combat-pack`, `rpg-fantasy-80`, `general-game-100`, `arcade-fanfare-pack`), `sfx_pack_install` to download & index a pack locally, `sfx_pack_search` to find clips by keyword, and `sfx_pack_use` to copy/layer/master clips to 44.1 kHz 16-bit PCM mono WAV under `assets/audio/`.\n\
-- All built-in catalog packs are CC0-1.0 Public Domain (no attribution required).",
+        skill_summary: "Browse and install 9 verified free SFX packs (Modern UI / motion-graphics first), master clips to 44.1 kHz mono WAV in assets/audio/, and source copyright-free YouTube BGM (zero dubstep) with credit receipts.",
+        skill_markdown: "- Start UI/HUD work with the trending Modern UI & Motion-Graphics packs: `motion-ui-swishes` (whooshes/transitions), `modern-interface-sfx` (clicks, pops, taps), and `modern-ui-pack-1` (menus, chimes, alerts; CC-BY-3.0, credit junggle). Then `kenney-ui-sfx`, `kenney-casino-cards`, `kenney-digital-sfx`, `rpg-combat-pack`, `rpg-fantasy-80`, `general-game-100` (CC0-1.0).\n\
+- Call `sfx_pack_list`, `sfx_pack_install` to download & index a pack, `sfx_pack_search` to find clips by keyword, and `sfx_pack_use` to copy/layer/master clips to 44.1 kHz 16-bit PCM mono WAV under `assets/audio/`.\n\
+- Background music: `music_search {\"genre\":\"lofi\"}` (genres `jazz-rap`, `lofi`, `trap`, `carti-type-beat`, `pluggnb`, `anime-hiphop`, `synthwave`) then `music_import {\"url\":\"https://www.youtube.com/watch?v=<id>\",\"out_name\":\"lobby_music\"}` (or the `youtube-nocopyright-music-cli` adapter) masters a 90 s loop-ready 44.1 kHz mono WAV + `.source.json` credit receipt. Prefer `royalty_free_verified`, `free_for_profit`, or `streambeats_dmca_free` tracks; skip `non_profit_only`; put the `credit_line` in the game description.\n\
+- ZERO dubstep (dubstep/brostep/riddim/wobble bass are filtered) and ZERO local oscillator / AI BGM drones for music.",
     },
     PackSpec {
         id: "rojo-open-cloud",
