@@ -107,7 +107,17 @@ export type TeamworkSnapshot = {
   board: BoardPost[];
 };
 
+export type ProjectContractSummary = {
+  has_contract: boolean;
+  active?: boolean;
+  total: number;
+  passed_count: number;
+  failing_ids?: string[];
+};
+
 export const teamUrl = (id: string, tail = "") => `/api/teamwork/${enc(id)}${tail}`;
+export const getProjectContract = (projectId: string) =>
+  call<ProjectContractSummary>(`/api/projects/${enc(projectId)}/contract`);
 export const listRuns = (projectId?: string | null) =>
   call<{ runs: RunSummary[] }>(projectId ? `/api/teamwork?project_id=${enc(projectId)}` : "/api/teamwork");
 export const getRun = (id: string) => call<TeamworkSnapshot>(teamUrl(id));

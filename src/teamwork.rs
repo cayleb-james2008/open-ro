@@ -2724,9 +2724,27 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "teardown_game"
             | "teardown_screenshot"
             | "teardown_spec"
+            | "teardown_play_live"
+            | "teardown_youtube_frames"
+            | "economy_sim"
+            | "monetization_audit"
+            | "contract_init"
+            | "contract_verify_update"
             | "unknown_add"
             | "unknown_update"
     )
+}
+
+fn is_write_or_submit_tool_with_args(tool: &str, args: &Value) -> bool {
+    match tool {
+        "publish_guard" => args.get("autofix").and_then(Value::as_bool) == Some(true),
+        "project_dependencies" => args.get("prune").and_then(Value::as_bool) == Some(true),
+        "project_snapshot" => matches!(
+            args.get("action").and_then(Value::as_str).unwrap_or("list"),
+            "create" | "restore"
+        ),
+        _ => is_write_or_submit_tool(tool),
+    }
 }
 
 fn is_action_required_value(val: &Value) -> bool {
@@ -3054,10 +3072,10 @@ fn run_agent_wake_cycle(
                     execute_agent_tool(shared, mgr, handle, agent_name, gen, &tool, &args);
                 let ok = tool_out.is_ok();
                 let action_required = tool_out.as_ref().is_ok_and(is_action_required_value);
-                if ok && !action_required && is_write_or_submit_tool(&tool) {
+                if ok && !action_required && is_write_or_submit_tool_with_args(&tool, &args) {
                     did_write_or_submit = true;
                 }
-                if ok && !action_required && (is_write_or_submit_tool(&tool) || tool == "board_post") {
+                if ok && !action_required && (is_write_or_submit_tool_with_args(&tool, &args) || tool == "board_post") {
                     recent_reads.clear();
                     dup_read_in_turn = None;
                 }
@@ -3226,6 +3244,7 @@ fn run_agent_wake_cycle(
                         .tasks
                         .iter()
                         .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Cancelled))
+                    && check_active_contract_before_finish(&st.project_dir, false).is_ok()
                 {
                     let _ = finalize_completed_run(&mut st, handle, agent_name, &summary);
                 } else {
@@ -3269,39 +3288,19 @@ fn run_agent_wake_cycle(
     Ok(())
 }
 
-fn role_rules_for(role: &str) -> &'static str {
-    match role {
-        "coordinator" => concat!(
-            "You are the Teamwork coordinator.\n",
-            "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`); spread tasks across all available workers in parallel instead of stacking everything onto one worker.\n",
-            "Follow Study -> Build -> Check -> Refine: check `study_status` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
-            "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync; use `studio_cua_*` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`) for assets Studio cannot generate natively.\n",
-            "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
-            "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, studio_cua_screenshot, studio_cua_mouse, studio_cua_keyboard, studio_cua_window, studio_stage_content, studio_verify_device, studio_verify_audio, studio_verify_ui_craft, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_moderation_poll, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
-            "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); `liveops_datastore_set`, `liveops_messaging_publish`, and `liveops_remote_config_push` (`push_to_datastore:true`) REQUIRE explicit owner `confirm:true`; never self-approve product prices."
-        ),
-        "verifier" => concat!(
-            "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `studio_cua_screenshot`, `studio_cua_window`, `studio_verify_device`, `studio_verify_audio`, `studio_verify_ui_craft`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
-            "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
-            "For game_code tasks (or `src/` / `ui/` changes), run `sandbox_playtest` with `{\"task_id\":\"<id>\"}` (or `project_playtest` when live Studio MCP is needed / `require_studio: true`) and confirm 0 errors BEFORE calling `verify_task` with `passed: true`.\n",
-            "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
-            "If checks, contracts (`mechanics_check`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
-        ),
-        "researcher" => concat!(
-            "You are the Teamwork researcher/designer.\n",
-            "Follow Study -> Build -> Check -> Refine: use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `teardown_game` (`target`, `new_niche?` -> full badges/passes/YouTube/wiki teardown + 7-pillar E2E spec in `refs/teardowns/<uid>/`), `teardown_screenshot`, `teardown_spec`, `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`.\n",
-            "Record observed/derived/inferred findings with `evidence_record`, track open gaps with `unknown_add`/`unknown_update` (resolve only with `resolution` + `evidence_for`), and validate `docs/mechanics.json` provenance via `mechanics_check`.\n",
-            "Budget <=3 research turns before writing deliverables (`web_fetch` is capped cleanly).\n",
-            "Claim every file you write (`project_write_file` auto-claims onto your active task), then call `submit_task` to hand off to `@verifier`."
-        ),
-        _ => concat!(
-            "You are a Teamwork specialist worker.\n",
+macro_rules! parity_tools_line {
+    () => {
+        "Parity & Harness Tools: teardown_get, teardown_play_live, teardown_youtube_frames, market_taste_snapshot, market_taste_refresh, economy_sim, monetization_audit, publish_guard, project_dependencies, project_snapshot, contract_init, contract_get, contract_verify_update (verifier-only passed:true), project_inspect_image, skills_search, skills_read.\n"
+    };
+}
+
+macro_rules! worker_shared_rules {
+    () => {
+        concat!(
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
+            "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`/`contract_get`, inspect OSS packs with `skills_search`/`skills_read`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`/`project_inspect_image`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
             "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `project_scene_mutate`, `gui_compile`); use `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, and `studio_cua_window` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `studio_verify_ui_craft`, `research_roblox_game`, `teardown_game`, `teardown_screenshot`, `teardown_spec`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `blender_build_map`, `audio_generate`, `sfx_pack_list`, `sfx_pack_install`, `sfx_pack_search`, `sfx_pack_use`, `music_search`, `music_import`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `studio_verify_ui_craft`, `research_roblox_game`, `teardown_game`, `teardown_get`, `teardown_screenshot`, `teardown_spec`, `teardown_play_live`, `teardown_youtube_frames`, `market_taste_snapshot`, `market_taste_refresh`, `economy_sim`, `monetization_audit`, `publish_guard`, `project_dependencies`, `project_snapshot`, `contract_init`, `contract_get`, `contract_verify_update`, `project_inspect_image`, `skills_search`, `skills_read`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `blender_build_map`, `audio_generate`, `sfx_pack_list`, `sfx_pack_install`, `sfx_pack_search`, `sfx_pack_use`, `music_search`, `music_import`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
             "Live Studio CUA & Bridge signatures: `studio_cua_screenshot {\"label\":\"viewport\"}`, `studio_cua_mouse {\"action\":\"click|double_click|right_click|move|drag|scroll\",\"x\":0.5,\"y\":0.5,\"to_x\":0.7,\"to_y\":0.7,\"normalized\":true}`, `studio_cua_keyboard {\"hotkey\":[\"ctrl\",\"s\"]}`, `studio_cua_window {\"action\":\"status|launch|attach|transfer|stop|pause|resume\",\"place_file\":\"...?\"}`, `studio_stage_content {}`, `studio_verify_device {\"profile\":\"phone_844x390|tablet_1024x768|desktop_1920x1080\"}`, `studio_verify_audio {}`, `studio_verify_ui_craft {\"offline\":false}`.\n",
             "UI Craft (10 Rules, zero copying): use `ui_kit_presets` / `ui_kit_generate` (ChatGPT sheet -> auto-sliced 9-slice transparent PNGs + `AssetIds.slices` + mixable layouts `skybridge-crest`/`perimeter-command`/`workshop-ribbon`/`compact-mobile-split` + `anime-pop-dark` matte dark dot-matrix skin + vibrant vertical `UIGradient` headers/pills + thick 2.5-3px black outlines + `cartoon_icons_sheet` + >=5.25:1 Dark/Light glass, `Lighting.BlurEffect`, >=44px glossy buttons, 844x390 safe-area clearance; never copy ANRX star-ribbons or dated medieval metallic bevel chrome).\n",
             "Image-Gen-First (Rules 8-10): generate `panels_sheet` (`modal_glass`, `title_ribbon`, `tab_active`, `tab_inactive`, `btn_emerald`, `btn_gold`, `dock_tile`, `inspector_card`), `cartoon_icons_sheet`, `chrome_sheet`, and `card_borders_sheet` via `ui_kit_generate {\"skin\":\"anime-pop-dark\",\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}` and `blender_build_map {\"preset\":\"arcane-dungeon-sanctum\"}` for sculpted `.mesh` sanctum props/floor; bind >=70% of modals/headers/tabs/buttons/progress bars/dock tiles to sliced PNGs (`ScaleType.Slice`/`Stretch`) with `BackgroundTransparency = 1` on slice-backed parents; then run `studio_verify_ui_craft` (live gate: ui_images_bound >= 6, slice_chrome_active >= 4, opaque_parent_violations == 0, panel_coverage_pct >= 65).\n",
@@ -3311,10 +3310,13 @@ fn role_rules_for(role: &str) -> &'static str {
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
             "- art_generate: {\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[\"art/references/...\"]}\n",
             "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"canvas\",\"width\":256,\"height\":256,\"color\":\"#00000000\"},{\"op\":\"draw\",\"shapes\":[...]}]} (or \"script\")\n",
+            "- project_inspect_image: {\"path\":\"art/ui/x.png\"} (pure-Rust dimensions/sha256/alpha%/border-chroma/dominant hex swatches)\n",
             "- mesh_generate: {\"name\":\"PropName\",\"parts\":[{\"shape\":\"box|cylinder|sphere|cone|torus|wedge\",\"size\":[w,d,h],\"pos\":[x,y,z],\"color\":\"#hex\"}],\"script\":\"...?\"}\n",
             "- audio_generate: {\"name\":\"sfx_name\",\"preset\":\"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\",\"duration_ms\":1200,\"out_path\":\"assets/audio/sfx.wav\"}\n",
             "- sfx_pack_list: {} / sfx_pack_install: {\"pack_id\":\"kenney-ui-sfx\"} / sfx_pack_search: {\"query\":\"click\",\"limit\":20} / sfx_pack_use: {\"pack_id\":\"kenney-ui-sfx\",\"clip\":\"...\",\"out_name\":\"ui_click\"}\n",
             "- music_search: {\"genre\":\"jazz-rap|lofi|trap|carti-type-beat|pluggnb|anime-hiphop|synthwave\",\"limit\":10} / music_import: {\"url\":\"https://www.youtube.com/watch?v=<id>\",\"genre\":\"lofi\",\"out_name\":\"lobby_music\",\"max_duration_s\":90} (copyright-free YouTube BGM, zero dubstep, never oscillator music)\n",
+            "- skills_search: {\"query\":\"roblox\",\"limit\":20} / skills_read: {\"path\":\"roblox/roblox-luau/SKILL.md\",\"max_chars\":8000}\n",
+            "- economy_sim / monetization_audit / publish_guard {\"autofix\":false} / project_dependencies {\"prune\":false} / project_snapshot {\"action\":\"list|create|restore\"}\n",
             "Cloud & Creator Hub rules & signatures:\n",
             "- creator_hub_status {\"cdp_url\":\"http://127.0.0.1:9222\",\"check_login\":true,\"save_creator\":true} / creator_hub_setup / creator_hub_configure: loopback CDP only; NEVER bypass login/2FA/CAPTCHA — if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner; keys stay in 0600 SecretStore (never logged)\n",
             "- assets_authorise {\"paths\":[\"art/**\"]} -> assets_upload {\"paths\":[...],\"max_audio_uploads\":5} -> assets_moderation_poll {} -> assets_codegen {\"studio_local_fallback\":true}\n",
@@ -3322,6 +3324,72 @@ fn role_rules_for(role: &str) -> &'static str {
             "- project_publish {\"versionType\":\"Saved\"|\"Published\",\"confirm\":true?} (`versionType:\"Published\"` REQUIRES explicit owner approval + `confirm:true`); universe_get {} / universe_set {\"settings\":{...}}\n",
             "- liveops_datastore_list {\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"} / liveops_datastore_get {\"store\":\"...\",\"key\":\"...\"} / liveops_datastore_set {\"store\":\"...\",\"key\":\"...\",\"value\":{...},\"expected_revision\":\"...\",\"confirm\":true} / liveops_messaging_publish {\"topic\":\"...\",\"message\":{...},\"confirm\":true} / liveops_remote_config_push {\"config\":{...},\"generate_luau\":true,\"push_to_datastore\":false} / liveops_telemetry_codegen {\"mode\":\"opencloud_datastore|webhook_relay\",\"store_name\":\"OpenRO_LiveTelemetry\",\"flush_interval_secs\":60} / liveops_telemetry_sync {\"source\":\"opencloud_datastore|creator_analytics\",\"days\":7} / liveops_telemetry_summary {}\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
+        )
+    };
+}
+
+fn role_rules_for(role: &str) -> &'static str {
+    match role {
+        "coordinator" => concat!(
+            "You are the Teamwork coordinator.\n",
+            "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`); spread tasks across all available workers in parallel instead of stacking everything onto one worker.\n",
+            "Initialize the default-FAIL verification contract early via `contract_init` (`features: [{id, title, verify_hint}]`); `finish_run` refuses while active contract features fail unless `allow_incomplete_contract: true`.\n",
+            "Follow Study -> Build -> Check -> Refine: check `study_status` and `contract_get` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
+            "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync; use `studio_cua_*` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`) for assets Studio cannot generate natively.\n",
+            "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
+            "Call `finish_run` once all tasks are `done` and all contract checks are passed by `@verifier`.\n",
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, studio_cua_screenshot, studio_cua_mouse, studio_cua_keyboard, studio_cua_window, studio_stage_content, studio_verify_device, studio_verify_audio, studio_verify_ui_craft, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_moderation_poll, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
+            parity_tools_line!(),
+            "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); `liveops_datastore_set`, `liveops_messaging_publish`, and `liveops_remote_config_push` (`push_to_datastore:true`) REQUIRE explicit owner `confirm:true`; never self-approve product prices."
+        ),
+        "verifier" => concat!(
+            "You are the Teamwork cold verifier.\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `project_inspect_image`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `economy_sim`, `monetization_audit`, `publish_guard`, `project_dependencies`, `project_snapshot`, `teardown_get`, `contract_get`, `contract_verify_update`, `skills_search`, `skills_read`, `studio_cua_screenshot`, `studio_cua_window`, `studio_verify_device`, `studio_verify_audio`, `studio_verify_ui_craft`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
+            "You are the ONLY role permitted to mark contract features `passed: true` via `contract_verify_update` (must include concrete observed `evidence`).\n",
+            "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
+            "For game_code tasks (or `src/` / `ui/` changes), run `sandbox_playtest` with `{\"task_id\":\"<id>\"}` (or `project_playtest` when live Studio MCP is needed / `require_studio: true`) and confirm 0 errors BEFORE calling `verify_task` with `passed: true`.\n",
+            "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
+            "If checks, contracts (`mechanics_check`, `contract_get`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
+        ),
+        "researcher" => concat!(
+            "You are the Teamwork researcher/designer.\n",
+            "Follow Study -> Build -> Check -> Refine: use `market_taste_snapshot`, `market_taste_refresh`, `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `teardown_game` (`target`, `new_niche?` -> full badges/passes/YouTube/wiki teardown + 7-pillar E2E spec in `refs/teardowns/<uid>/`), `teardown_get`, `teardown_play_live` (live Sober screenshot capture; never bypasses auth/2FA), `teardown_youtube_frames`, `teardown_screenshot`, `teardown_spec`, `project_inspect_image`, `skills_search`, `skills_read`, `contract_get`, `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`.\n",
+            "Record observed/derived/inferred findings with `evidence_record`, track open gaps with `unknown_add`/`unknown_update` (resolve only with `resolution` + `evidence_for`), and validate `docs/mechanics.json` provenance via `mechanics_check`.\n",
+            "Budget <=3 research turns before writing deliverables (`web_fetch` is capped cleanly).\n",
+            "Claim every file you write (`project_write_file` auto-claims onto your active task), then call `submit_task` to hand off to `@verifier`."
+        ),
+        "world" => concat!(
+            "You are the Teamwork 3D world & environment specialist.\n",
+            "Focus: sculpted Blender map kits (`blender_build_map`, `mesh_generate`/`blender_generate`), terrain & lighting (`project_scene_mutate`, `project_scene_get`), StreamingEnabled budgets (<=20k tris/mesh, <=12 non-shadow lights, <=40 ParticleEmitters), upright cylinders (`CFrame.Angles(0, 0, math.rad(90))`), and `project_inspect_image` on generated textures.\n",
+            worker_shared_rules!()
+        ),
+        "art" => concat!(
+            "You are the Teamwork 2D art & UI asset specialist.\n",
+            "Focus: reference-guided UI sheets (`ui_kit_generate` w/ `panels_sheet`, `cartoon_icons_sheet`, `chrome_sheet`, `card_borders_sheet`, `teardown_get` refs), original character/card art (`reference_search`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`), and pure-Rust alpha/border/swatch checks (`project_inspect_image`). Never copy real logos or brand assets.\n",
+            worker_shared_rules!()
+        ),
+        "audio" => concat!(
+            "You are the Teamwork audio & sound design specialist.\n",
+            "Focus: copyright-free YouTube BGM (`music_search`, `music_import`, zero dubstep/oscillator music), CC0/modern UI SFX packs (`sfx_pack_list`, `sfx_pack_install`, `sfx_pack_search`, `sfx_pack_use`, `audio_generate`), 44.1kHz mono WAV mastering, and live Studio audio checks (`studio_verify_audio`).\n",
+            worker_shared_rules!()
+        ),
+        "ui" => concat!(
+            "You are the Teamwork UI/UX specialist.\n",
+            "Focus: ScreenDoc v1 (`gui_save`, `gui_compile`), sliced PNG UI Craft (`ui_kit_generate`, `teardown_get`, `project_inspect_image`), WCAG >=5.25:1 contrast, phone `844x390` safe-area clearance, and live verification (`studio_verify_ui_craft`, `studio_verify_device`).\n",
+            worker_shared_rules!()
+        ),
+        "systems" => concat!(
+            "You are the Teamwork Luau gameplay & economy systems specialist.\n",
+            "Focus: --!strict server/client Luau architecture, economy balancing (`economy_sim`), monetization safety (`monetization_audit`), pre-publish hygiene (`publish_guard`, `project_dependencies`, `project_snapshot`), headless verification (`sandbox_playtest`, `project_run_lune`), and contract compliance (`contract_get`).\n",
+            worker_shared_rules!()
+        ),
+        "builder" => concat!(
+            "You are a Teamwork full-stack Roblox builder.\n",
+            worker_shared_rules!()
+        ),
+        _ => concat!(
+            "You are a Teamwork specialist worker.\n",
+            worker_shared_rules!()
         ),
     }
 }
@@ -3757,8 +3825,71 @@ fn execute_agent_tool(
         }
         "research_roblox_game" => tool_research_roblox_game(handle, args),
         "teardown_game" => tool_teardown_game(handle, args),
+        "teardown_get" => tool_teardown_get(handle, args),
         "teardown_screenshot" => tool_teardown_screenshot(handle, args),
         "teardown_spec" => tool_teardown_spec(handle, args),
+        "teardown_play_live" => tool_teardown_play_live(handle, args),
+        "teardown_youtube_frames" => tool_teardown_youtube_frames(handle, args),
+        "market_taste_snapshot" => tool_market_taste_snapshot(shared, args),
+        "market_taste_refresh" => tool_market_taste_refresh(shared),
+        "economy_sim" => {
+            let r = project_ref_for_run(handle);
+            let res = reply_to_tool_result(crate::playtest::run_project_economy_sim_post(shared, &r, args))?;
+            if args.get("apply_suggestions").and_then(Value::as_bool) == Some(true) {
+                record_generated_asset_files(handle, agent_name, tool, args, &res);
+            }
+            Ok(res)
+        }
+        "monetization_audit" => {
+            let r = project_ref_for_run(handle);
+            let res = reply_to_tool_result(crate::playtest::repair_project_monetization_audit(shared, &r, args))?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "publish_guard" => {
+            let r = project_ref_for_run(handle);
+            if args.get("autofix").and_then(Value::as_bool) == Some(true) {
+                let res = reply_to_tool_result(crate::playtest::autofix_project_publish_guard(shared, &r, args))?;
+                record_generated_asset_files(handle, agent_name, tool, args, &res);
+                Ok(res)
+            } else {
+                crate::playtest::project_publish_guard(&r)
+                    .map_err(|rep| reply_to_tool_result(Err(rep)).unwrap_err())
+            }
+        }
+        "project_dependencies" => {
+            let r = project_ref_for_run(handle);
+            if args.get("prune").and_then(Value::as_bool) == Some(true) {
+                reply_to_tool_result(crate::playtest::prune_or_fix_dependencies(&r))
+            } else {
+                crate::playtest::project_dependencies_report(&r)
+                    .map_err(|rep| reply_to_tool_result(Err(rep)).unwrap_err())
+            }
+        }
+        "project_snapshot" => tool_project_snapshot(shared, handle, args),
+        "contract_init" => {
+            let project_dir = handle.state.lock().unwrap().project_dir.clone();
+            crate::contract::contract_init(&project_dir, args).map_err(|oc| oc.msg)
+        }
+        "contract_get" => {
+            let project_dir = handle.state.lock().unwrap().project_dir.clone();
+            crate::contract::contract_get(&project_dir).map_err(|oc| oc.msg)
+        }
+        "contract_verify_update" => tool_contract_verify_update(handle, agent_name, args),
+        "project_inspect_image" => {
+            let project_dir = handle.state.lock().unwrap().project_dir.clone();
+            crate::image_ops::inspect_project_image(&project_dir, args).map_err(|oc| oc.msg)
+        }
+        "skills_search" => {
+            let q = args
+                .get("query")
+                .or_else(|| args.get("q"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            Ok(crate::skills::search_oss_skill_packs(q, limit))
+        }
+        "skills_read" => crate::skills::read_oss_skill_pack(args).map_err(|oc| oc.msg),
         "web_fetch" => tool_web_fetch(args),
         "web_search" => tool_web_search(args),
         "evidence_record" => tool_evidence_record(handle, args),
@@ -4745,12 +4876,48 @@ fn tool_finish_run(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resul
             incomplete.join(", ")
         ));
     }
+    let allow_incomplete = args
+        .get("allow_incomplete_contract")
+        .and_then(Value::as_bool)
+        == Some(true);
+    check_active_contract_before_finish(&st.project_dir, allow_incomplete)?;
     let summary = args
         .get("summary")
         .and_then(|v| v.as_str())
         .unwrap_or("All tasks verified and completed.")
         .to_string();
     Ok(finalize_completed_run(&mut st, handle, caller, &summary))
+}
+
+fn check_active_contract_before_finish(
+    project_dir: &Path,
+    allow_incomplete: bool,
+) -> Result<(), String> {
+    if allow_incomplete {
+        return Ok(());
+    }
+    let Ok(c) = crate::contract::contract_get(project_dir) else {
+        return Ok(());
+    };
+    let has = c.get("has_contract").and_then(Value::as_bool) == Some(true);
+    let active = c.get("active").and_then(Value::as_bool) == Some(true);
+    let failing: Vec<String> = c
+        .get("failing_ids")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if has && active && !failing.is_empty() {
+        return Err(format!(
+            "cannot finish run while contract checks are failing: {}",
+            failing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn finalize_completed_run(
@@ -4882,6 +5049,105 @@ fn tool_teardown_screenshot(handle: &Arc<RunHandle>, args: &Value) -> Result<Val
 fn tool_teardown_spec(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     crate::teardown::merge_teardown_spec(&project_dir, args).map_err(|oc| oc.msg)
+}
+
+fn tool_teardown_get(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let uid = args
+        .get("universe_id")
+        .or_else(|| args.get("teardown_id"))
+        .and_then(Value::as_u64);
+    match crate::teardown::get_teardown(&project_dir, uid) {
+        Ok(v) => Ok(v),
+        Err(oc) if oc.status == 404 && uid.is_none() => Ok(json!({
+            "ok": true,
+            "has_teardown": false,
+            "screenshots": [],
+            "recommended_ui_reference_screenshots": [],
+        })),
+        Err(oc) => Err(oc.msg),
+    }
+}
+
+fn tool_teardown_play_live(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::teardown::teardown_play_live(&project_dir, args).map_err(|oc| oc.msg)
+}
+
+fn tool_teardown_youtube_frames(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::teardown::teardown_youtube_frames(&project_dir, args).map_err(|oc| oc.msg)
+}
+
+fn tool_market_taste_snapshot(shared: &Arc<Shared>, args: &Value) -> Result<Value, String> {
+    let niche = match args
+        .get("niche")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(crate::market_taste::normalize_niche_id(raw)?),
+        None => None,
+    };
+    Ok(shared.market_taste.lock().unwrap().snapshot_json(niche))
+}
+
+fn tool_market_taste_refresh(shared: &Arc<Shared>) -> Result<Value, String> {
+    shared
+        .market_taste
+        .lock()
+        .unwrap()
+        .refresh_live(std::time::Duration::from_secs(12))
+}
+
+fn tool_project_snapshot(
+    shared: &Arc<Shared>,
+    handle: &Arc<RunHandle>,
+    args: &Value,
+) -> Result<Value, String> {
+    let r = project_ref_for_run(handle);
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("list")
+        .trim();
+    match action {
+        "list" => crate::playtest::list_project_snapshots(&r)
+            .map_err(|rep| reply_to_tool_result(Err(rep)).unwrap_err()),
+        "create" => reply_to_tool_result(crate::playtest::create_project_snapshot(&r, args)),
+        "restore" => {
+            let sid = args
+                .get("snapshot_id")
+                .or_else(|| args.get("id"))
+                .or_else(|| args.get("sid"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or("project_snapshot action:'restore' requires args.snapshot_id")?;
+            reply_to_tool_result(crate::playtest::restore_project_snapshot(
+                shared, &r, sid, args,
+            ))
+        }
+        other => Err(format!(
+            "unknown project_snapshot action '{other}' (expected list, create, or restore)"
+        )),
+    }
+}
+
+fn tool_contract_verify_update(
+    handle: &Arc<RunHandle>,
+    agent_name: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let (project_dir, caller_role) = {
+        let st = handle.state.lock().unwrap();
+        let role = st
+            .agent_index(agent_name)
+            .map(|i| st.roster[i].role.clone())
+            .unwrap_or_default();
+        (st.project_dir.clone(), role)
+    };
+    crate::contract::contract_verify_update(&project_dir, args, &caller_role).map_err(|oc| oc.msg)
 }
 
 fn resolve_web_fetch_max_chars(args: &Value) -> usize {

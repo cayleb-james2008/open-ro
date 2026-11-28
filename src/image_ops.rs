@@ -1367,3 +1367,455 @@ pub fn slice_ui_sheet(root: &Path, body: &Value) -> R<Value> {
         "sliced": out_items,
     }))
 }
+
+const INSPECT_MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const INSPECT_MAX_PNG_DIM: u32 = 8192;
+const INSPECT_MAX_PNG_PIXELS: u64 = 24_000_000;
+
+fn paeth_pred(a: u8, b: u8, c: u8) -> u8 {
+    let ai = a as i32;
+    let bi = b as i32;
+    let ci = c as i32;
+    let p = ai + bi - ci;
+    let pa = (p - ai).abs();
+    let pb = (p - bi).abs();
+    let pc = (p - ci).abs();
+    if pa <= pb && pa <= pc {
+        a
+    } else if pb <= pc {
+        b
+    } else {
+        c
+    }
+}
+
+fn decode_png_rgba_pure(bytes: &[u8]) -> Result<(u32, u32, bool, Vec<[u8; 4]>), String> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+
+    if bytes.len() < 33 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err("invalid PNG signature".into());
+    }
+    let mut pos = 8usize;
+    let mut width = 0u32;
+    let mut height = 0u32;
+    let mut bit_depth = 0u8;
+    let mut color_type = 0u8;
+    let mut interlace = 0u8;
+    let mut saw_ihdr = false;
+    let mut plte: Vec<[u8; 3]> = Vec::new();
+    let mut trns: Vec<u8> = Vec::new();
+    let mut idat: Vec<u8> = Vec::new();
+
+    while pos + 12 <= bytes.len() {
+        let len =
+            u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]) as usize;
+        let kind = &bytes[pos + 4..pos + 8];
+        let data_start = pos + 8;
+        let data_end = data_start.saturating_add(len);
+        if data_end + 4 > bytes.len() {
+            return Err("truncated PNG chunk".into());
+        }
+        let chunk = &bytes[data_start..data_end];
+        match kind {
+            b"IHDR" => {
+                if chunk.len() != 13 {
+                    return Err("invalid IHDR chunk length".into());
+                }
+                width = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                height = u32::from_be_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                bit_depth = chunk[8];
+                color_type = chunk[9];
+                interlace = chunk[12];
+                saw_ihdr = true;
+            }
+            b"PLTE" => {
+                for tri in chunk.chunks_exact(3) {
+                    plte.push([tri[0], tri[1], tri[2]]);
+                }
+            }
+            b"tRNS" => trns = chunk.to_vec(),
+            b"IDAT" => idat.extend_from_slice(chunk),
+            b"IEND" => break,
+            _ => {}
+        }
+        pos = data_end + 4;
+    }
+
+    if !saw_ihdr
+        || width == 0
+        || height == 0
+        || width > INSPECT_MAX_PNG_DIM
+        || height > INSPECT_MAX_PNG_DIM
+    {
+        return Err("invalid PNG dimensions".into());
+    }
+    if (width as u64) * (height as u64) > INSPECT_MAX_PNG_PIXELS {
+        return Err("PNG pixel count exceeds limit".into());
+    }
+    if interlace != 0 {
+        return Err("interlaced PNG not supported in inspector".into());
+    }
+    if bit_depth != 8 && bit_depth != 16 {
+        return Err(format!("unsupported PNG bit depth {bit_depth}"));
+    }
+    let channels: usize = match color_type {
+        0 => 1,
+        2 => 3,
+        3 => 1,
+        4 => 2,
+        6 => 4,
+        other => return Err(format!("unsupported PNG color type {other}")),
+    };
+    let bytes_per_sample = (bit_depth as usize) / 8;
+    let bpp = channels * bytes_per_sample;
+    let row_bytes = (width as usize) * bpp;
+    let expected_raw = (height as usize) * (row_bytes + 1);
+
+    let mut decoder = ZlibDecoder::new(idat.as_slice()).take((expected_raw + 1024) as u64);
+    let mut raw = Vec::with_capacity(expected_raw);
+    decoder
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("zlib decompress failed: {e}"))?;
+    if raw.len() < expected_raw {
+        return Err(format!(
+            "decompressed PNG too short ({} < {expected_raw})",
+            raw.len()
+        ));
+    }
+
+    let mut prev_row = vec![0u8; row_bytes];
+    let mut cur_row = vec![0u8; row_bytes];
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize));
+
+    for y in 0..height as usize {
+        let row_off = y * (row_bytes + 1);
+        let filter = raw[row_off];
+        let src = &raw[row_off + 1..row_off + 1 + row_bytes];
+        for i in 0..row_bytes {
+            let x = src[i];
+            let a = if i >= bpp { cur_row[i - bpp] } else { 0 };
+            let b = prev_row[i];
+            let c = if i >= bpp { prev_row[i - bpp] } else { 0 };
+            cur_row[i] = match filter {
+                0 => x,
+                1 => x.wrapping_add(a),
+                2 => x.wrapping_add(b),
+                3 => x.wrapping_add((((a as u16) + (b as u16)) >> 1) as u8),
+                4 => x.wrapping_add(paeth_pred(a, b, c)),
+                other => return Err(format!("unsupported PNG filter {other}")),
+            };
+        }
+        match (color_type, bytes_per_sample) {
+            (6, 1) => {
+                for px in cur_row.chunks_exact(4) {
+                    rgba.push([px[0], px[1], px[2], px[3]]);
+                }
+            }
+            (2, 1) => {
+                for px in cur_row.chunks_exact(3) {
+                    rgba.push([px[0], px[1], px[2], 255]);
+                }
+            }
+            (0, 1) => {
+                for &g in &cur_row {
+                    rgba.push([g, g, g, 255]);
+                }
+            }
+            (4, 1) => {
+                for px in cur_row.chunks_exact(2) {
+                    rgba.push([px[0], px[0], px[0], px[1]]);
+                }
+            }
+            (3, 1) => {
+                for &idx in &cur_row {
+                    let c = plte.get(idx as usize).copied().unwrap_or([0, 0, 0]);
+                    let a = trns.get(idx as usize).copied().unwrap_or(255);
+                    rgba.push([c[0], c[1], c[2], a]);
+                }
+            }
+            (6, 2) => {
+                for px in cur_row.chunks_exact(8) {
+                    rgba.push([px[0], px[2], px[4], px[6]]);
+                }
+            }
+            (2, 2) => {
+                for px in cur_row.chunks_exact(6) {
+                    rgba.push([px[0], px[2], px[4], 255]);
+                }
+            }
+            (0, 2) => {
+                for px in cur_row.chunks_exact(2) {
+                    rgba.push([px[0], px[0], px[0], 255]);
+                }
+            }
+            (4, 2) => {
+                for px in cur_row.chunks_exact(4) {
+                    rgba.push([px[0], px[0], px[0], px[2]]);
+                }
+            }
+            _ => return Err("unsupported PNG color/depth combination".into()),
+        }
+        std::mem::swap(&mut prev_row, &mut cur_row);
+    }
+
+    let has_alpha_channel = matches!(color_type, 4 | 6) || (color_type == 3 && !trns.is_empty());
+    Ok((width, height, has_alpha_channel, rgba))
+}
+
+fn parse_jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 9 < bytes.len() {
+        if bytes[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = bytes[i + 1];
+        if marker == 0xD9 || marker == 0xDA {
+            break;
+        }
+        if matches!(marker, 0xC0..=0xC2) {
+            let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+            let w = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
+            return Some((w, h));
+        }
+        if i + 3 < bytes.len() {
+            let seg_len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+            if seg_len < 2 {
+                break;
+            }
+            i += 2 + seg_len;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+fn parse_webp_dimensions(bytes: &[u8]) -> Option<(u32, u32, bool)> {
+    if bytes.len() < 30 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    let chunk = &bytes[12..16];
+    if chunk == b"VP8X" && bytes.len() >= 30 {
+        let has_alpha = (bytes[20] & 0x10) != 0;
+        let w = 1 + (u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]));
+        let h = 1 + (u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]));
+        return Some((w, h, has_alpha));
+    }
+    if chunk == b"VP8L" && bytes.len() >= 25 && bytes[20] == 0x2F {
+        let b = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
+        let w = (b & 0x3FFF) + 1;
+        let h = ((b >> 14) & 0x3FFF) + 1;
+        let has_alpha = ((b >> 28) & 1) != 0;
+        return Some((w, h, has_alpha));
+    }
+    if chunk == b"VP8 " && bytes.len() >= 30 && &bytes[23..26] == b"\x9d\x01\x2a" {
+        let w = (u16::from_le_bytes([bytes[26], bytes[27]]) & 0x3FFF) as u32;
+        let h = (u16::from_le_bytes([bytes[28], bytes[29]]) & 0x3FFF) as u32;
+        return Some((w, h, false));
+    }
+    None
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+/// Pure-Rust cross-platform project image inspector (Gap #101).
+/// Validates project-relative PNG/JPEG/WEBP path (`safe_rel`, symlink check), computes
+/// dimensions, bytes, sha256, and for PNGs: alpha transparency %, exterior border
+/// residual chroma check, and top dominant `#RRGGBB` hex swatches.
+pub fn inspect_project_image(project_dir: &Path, body: &Value) -> R<Value> {
+    let rel = body
+        .get("path")
+        .or_else(|| body.get("file"))
+        .or_else(|| body.get("image_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Oc {
+            status: 400,
+            msg: "inspect_project_image requires body.path (project-relative image path)".into(),
+        })?;
+
+    let lower = rel.to_ascii_lowercase();
+    if lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c") || lower.contains("%25") {
+        return bad("invalid image path");
+    }
+
+    let abs = safe_rel(project_dir, rel)?;
+    let meta = std::fs::symlink_metadata(&abs)
+        .map_err(|_| Oc { status: 404, msg: format!("image '{rel}' not found in project") })?;
+    if meta.file_type().is_symlink() {
+        return bad(format!("image '{rel}' is a symlink (CWE-59)"));
+    }
+    if !meta.is_file() {
+        return bad(format!("image '{rel}' is not a regular file"));
+    }
+    if meta.len() > INSPECT_MAX_IMAGE_BYTES {
+        return bad("image exceeds 20 MiB safety limit");
+    }
+
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| Oc { status: 500, msg: format!("read image '{rel}': {e}") })?;
+    let sha256 = crate::opencloud::sha256_hex(&bytes);
+    let ext = crate::market_taste::detect_image_ext(&bytes)
+        .ok_or_else(|| Oc { status: 400, msg: format!("'{rel}' is not a valid PNG, JPEG, or WEBP image") })?;
+
+    if ext == "png" {
+        match decode_png_rgba_pure(&bytes) {
+            Ok((width, height, has_alpha_channel, rgba)) => {
+                let total = rgba.len().max(1);
+                let mut transparent_count = 0usize;
+                let mut semi_count = 0usize;
+                let mut any_non_opaque = false;
+
+                // Quantize into 12-bit (4 bits per channel) buckets for dominant swatch extraction
+                let mut buckets: std::collections::HashMap<u16, (u64, u64, u64, u64)> =
+                    std::collections::HashMap::new();
+                let mut visible_count = 0usize;
+
+                let w = width as usize;
+                let h = height as usize;
+                let mut border_total = 0usize;
+                let mut border_opaque = 0usize;
+                let mut border_chroma = 0usize;
+
+                for (idx, &[r, g, b, a]) in rgba.iter().enumerate() {
+                    if a < 255 {
+                        any_non_opaque = true;
+                    }
+                    if a < 128 {
+                        transparent_count += 1;
+                    } else if a < 250 {
+                        semi_count += 1;
+                    }
+                    if a >= 32 {
+                        visible_count += 1;
+                        let key = (((r as u16) >> 4) << 8)
+                            | (((g as u16) >> 4) << 4)
+                            | ((b as u16) >> 4);
+                        let e = buckets.entry(key).or_insert((0, 0, 0, 0));
+                        e.0 += 1;
+                        e.1 += r as u64;
+                        e.2 += g as u64;
+                        e.3 += b as u64;
+                    }
+
+                    let x = idx % w;
+                    let y = idx / w;
+                    if x < 2 || x + 2 >= w || y < 2 || y + 2 >= h {
+                        border_total += 1;
+                        if a >= 32 {
+                            border_opaque += 1;
+                            let max_c = r.max(g).max(b);
+                            let min_c = r.min(g).min(b);
+                            if max_c - min_c >= 24 {
+                                border_chroma += 1;
+                            }
+                        }
+                    }
+                }
+
+                let mut ranked: Vec<(u64, u64, u64, u64)> = buckets.into_values().collect();
+                ranked.sort_by(|a, b| b.0.cmp(&a.0));
+                let denom = visible_count.max(1) as f64;
+                let dominant_colors: Vec<Value> = ranked
+                    .into_iter()
+                    .take(5)
+                    .map(|(cnt, sr, sg, sb)| {
+                        let r = (sr / cnt) as u8;
+                        let g = (sg / cnt) as u8;
+                        let b = (sb / cnt) as u8;
+                        let hex = format!("#{r:02X}{g:02X}{b:02X}");
+                        json!({
+                            "hex": hex,
+                            "pct": round2((cnt as f64) * 100.0 / denom),
+                            "count": cnt,
+                        })
+                    })
+                    .collect();
+                let dominant_hexes: Vec<String> = dominant_colors
+                    .iter()
+                    .filter_map(|c| c.get("hex").and_then(Value::as_str).map(ToString::to_string))
+                    .collect();
+
+                let alpha_transparent_pct = round2((transparent_count as f64) * 100.0 / (total as f64));
+                let opaque_pct = round2(
+                    ((total - transparent_count - semi_count) as f64) * 100.0 / (total as f64),
+                );
+                let bt = border_total.max(1) as f64;
+                let border_opaque_pct = round2((border_opaque as f64) * 100.0 / bt);
+                let border_residual_chroma_pct = round2((border_chroma as f64) * 100.0 / bt);
+
+                return Ok(json!({
+                    "ok": true,
+                    "path": rel,
+                    "format": "png",
+                    "width": width,
+                    "height": height,
+                    "bytes": bytes.len(),
+                    "sha256": sha256,
+                    "has_alpha": has_alpha_channel || any_non_opaque,
+                    "alpha_transparent_pct": alpha_transparent_pct,
+                    "transparent_pct": alpha_transparent_pct,
+                    "opaque_pct": opaque_pct,
+                    "exterior_border": {
+                        "border_pixels": border_total,
+                        "opaque_border_pct": border_opaque_pct,
+                        "residual_chroma_pct": border_residual_chroma_pct,
+                        "clean_transparent_border": border_opaque_pct < 5.0 && border_residual_chroma_pct < 2.0,
+                    },
+                    "dominant_colors": dominant_colors,
+                    "dominant_hexes": dominant_hexes,
+                }));
+            }
+            Err(decode_note) => {
+                let (width, height) = if bytes.len() >= 24 && &bytes[12..16] == b"IHDR" {
+                    (
+                        u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
+                        u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]),
+                    )
+                } else {
+                    (0, 0)
+                };
+                return Ok(json!({
+                    "ok": true,
+                    "path": rel,
+                    "format": "png",
+                    "width": width,
+                    "height": height,
+                    "bytes": bytes.len(),
+                    "sha256": sha256,
+                    "warning": decode_note,
+                    "dominant_colors": [],
+                    "dominant_hexes": [],
+                }));
+            }
+        }
+    }
+
+    let (width, height, has_alpha) = if ext == "jpg" {
+        let (w, h) = parse_jpeg_dimensions(&bytes).unwrap_or((0, 0));
+        (w, h, false)
+    } else {
+        parse_webp_dimensions(&bytes).unwrap_or((0, 0, false))
+    };
+
+    Ok(json!({
+        "ok": true,
+        "path": rel,
+        "format": ext,
+        "width": width,
+        "height": height,
+        "bytes": bytes.len(),
+        "sha256": sha256,
+        "has_alpha": has_alpha,
+        "dominant_colors": [],
+        "dominant_hexes": [],
+    }))
+}

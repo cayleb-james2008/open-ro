@@ -990,6 +990,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path == "/api/library/music"
         || clean_path.starts_with("/api/library/music/")
         || clean_path == "/api/library/music-runner/install"
+        || clean_path == "/api/skills/packs"
+        || clean_path.starts_with("/api/skills/packs/")
         || clean_path == "/api/tools/image/process"
         || clean_path == "/api/monetization/pack"
         || clean_path == "/api/studio/monetization-audit"
@@ -1760,6 +1762,75 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
             )
         }));
     }
+    if agent.hooks.market_taste_snapshot.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.market_taste_snapshot = Some(Arc::new(move |args| {
+            let niche = match args
+                .get("niche")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(raw) => Some(crate::market_taste::normalize_niche_id(raw)?),
+                None => None,
+            };
+            Ok(srv.market_taste.lock().unwrap().snapshot_json(niche))
+        }));
+    }
+    if agent.hooks.market_taste_refresh.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.market_taste_refresh = Some(Arc::new(move |_args| {
+            let res = srv
+                .market_taste
+                .lock()
+                .unwrap()
+                .refresh_live(std::time::Duration::from_secs(12))?;
+            sync_agent_library_prompt(&srv);
+            Ok(res)
+        }));
+    }
+    if agent.hooks.project_snapshot.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.project_snapshot = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "project_snapshot")?;
+            let r = srv
+                .projects
+                .lock()
+                .unwrap()
+                .find(&pid)
+                .ok_or_else(|| format!("no project '{pid}'"))?;
+            let action = args.get("action").and_then(Value::as_str).unwrap_or("list").trim();
+            let reply_err = |rep: crate::project_api::Reply| -> String {
+                serde_json::from_slice::<Value>(&rep.body)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(Value::as_str).map(String::from))
+                    .unwrap_or_else(|| String::from_utf8_lossy(&rep.body).trim().to_string())
+            };
+            let reply_ok = |rep: crate::project_api::Reply| -> Value {
+                serde_json::from_slice(&rep.body).unwrap_or_else(|_| json!({ "ok": true }))
+            };
+            match action {
+                "list" => crate::playtest::list_project_snapshots(&r).map_err(reply_err),
+                "create" => crate::playtest::create_project_snapshot(&r, args)
+                    .map(reply_ok)
+                    .map_err(reply_err),
+                "restore" => {
+                    let sid = args
+                        .get("snapshot_id")
+                        .or_else(|| args.get("id"))
+                        .or_else(|| args.get("sid"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .ok_or("project_snapshot action:'restore' requires args.snapshot_id")?;
+                    crate::playtest::restore_project_snapshot(&srv, &r, sid, args)
+                        .map(reply_ok)
+                        .map_err(reply_err)
+                }
+                other => Err(format!("unknown project_snapshot action '{other}'")),
+            }
+        }));
+    }
 }
 
 fn ensure_run_worker(shared: &Arc<Shared>) {
@@ -2075,6 +2146,16 @@ fn handle(
 
     // Gap #93 project-scoped Live Game Teardown routes.
     if try_route_project_teardown(&mut stream, shared, &req, path, query) {
+        break 'req_done;
+    }
+
+    // Gap #100 project-scoped Contract Engine routes.
+    if try_route_project_contract(&mut stream, shared, &req, path) {
+        break 'req_done;
+    }
+
+    // Gap #101 project-scoped visual image inspector route.
+    if try_route_project_inspect_image(&mut stream, shared, &req, path) {
         break 'req_done;
     }
 
@@ -2757,6 +2838,40 @@ fn handle(
                 .into_bytes()
             });
             respond_bytes(&mut stream, "200 OK", "application/json", "no-store", bytes);
+        }
+        ("GET", "/api/skills/packs") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_err(
+                    &mut stream,
+                    "403 Forbidden",
+                    "OSS skill pack discovery is only allowed from this machine (loopback)",
+                );
+            } else {
+                let q = query_param(query, "query")
+                    .or_else(|| query_param(query, "q"))
+                    .unwrap_or_default();
+                let limit = query_param(query, "limit")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(20);
+                respond_json(&mut stream, "200 OK", &crate::skills::search_oss_skill_packs(&q, limit));
+            }
+        }
+        ("POST", "/api/skills/packs/read") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_err(
+                    &mut stream,
+                    "403 Forbidden",
+                    "OSS skill pack reading is only allowed from this machine (loopback)",
+                );
+            } else {
+                match serde_json::from_slice::<Value>(&req.body) {
+                    Ok(body) if body.is_object() => match crate::skills::read_oss_skill_pack(&body) {
+                        Ok(v) => respond_json(&mut stream, "200 OK", &v),
+                        Err(oc) => respond_err(&mut stream, status_line_for_code(oc.status), &oc.msg),
+                    },
+                    _ => respond_err(&mut stream, "400 Bad Request", "invalid JSON body"),
+                }
+            }
         }
         ("POST", "/api/skills/build") => {
             handle_skill_build(&mut stream, shared, &req.body);
@@ -7021,6 +7136,8 @@ fn try_route_project_teardown(
         [_, "teardown"] => "",
         [_, "teardown", "screenshot"] => "screenshot",
         [_, "teardown", "spec"] => "spec",
+        [_, "teardown", "play-live"] => "play-live",
+        [_, "teardown", "youtube-frames"] => "youtube-frames",
         _ => return false,
     };
     let id = segs[0];
@@ -7110,9 +7227,143 @@ fn try_route_project_teardown(
                 Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
             }
         }
+        ("POST", "play-live") => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            match crate::teardown::teardown_play_live(&proj_dir, &body) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        ("POST", "youtube-frames") => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            match crate::teardown::teardown_youtube_frames(&proj_dir, &body) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
         _ => {
             respond_err(stream, "405 Method Not Allowed", "unsupported method for teardown endpoint");
         }
+    }
+    true
+}
+
+fn try_route_project_contract(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+) -> bool {
+    let Some(rest) = path.strip_prefix("/api/projects/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    if segs.len() != 2 || segs[1] != "contract" {
+        return false;
+    }
+    let id = segs[0];
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "Contract endpoints are only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+    let Some(proj_dir) = resolve_project_dir(shared, id) else {
+        respond_err(stream, "404 Not Found", &format!("unknown project '{id}'"));
+        return true;
+    };
+    let parse_json_body = || -> Result<Value, ()> {
+        if req.body.is_empty() {
+            Ok(json!({}))
+        } else {
+            serde_json::from_slice::<Value>(&req.body)
+                .ok()
+                .filter(|v| v.is_object())
+                .ok_or(())
+        }
+    };
+    match req.method.as_str() {
+        "GET" => match crate::contract::contract_get(&proj_dir) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+        },
+        "POST" => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            match crate::contract::contract_init(&proj_dir, &body) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        "PATCH" => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            let caller_role = body
+                .get("caller_role")
+                .or_else(|| body.get("role"))
+                .and_then(Value::as_str)
+                .unwrap_or("api");
+            match crate::contract::contract_verify_update(&proj_dir, &body, caller_role) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        _ => {
+            respond_err(stream, "405 Method Not Allowed", "unsupported method for contract endpoint");
+        }
+    }
+    true
+}
+
+fn try_route_project_inspect_image(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+) -> bool {
+    let Some(rest) = path.strip_prefix("/api/projects/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    if segs.len() != 2 || segs[1] != "inspect-image" {
+        return false;
+    }
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "Image inspection is only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+    if req.method != "POST" {
+        respond_err(stream, "405 Method Not Allowed", "POST required for inspect-image");
+        return true;
+    }
+    let id = segs[0];
+    let Some(proj_dir) = resolve_project_dir(shared, id) else {
+        respond_err(stream, "404 Not Found", &format!("unknown project '{id}'"));
+        return true;
+    };
+    let Ok(body) = serde_json::from_slice::<Value>(&req.body).ok().filter(|v| v.is_object()).ok_or(()) else {
+        respond_err(stream, "400 Bad Request", "invalid JSON body");
+        return true;
+    };
+    match crate::image_ops::inspect_project_image(&proj_dir, &body) {
+        Ok(v) => respond_json(stream, "200 OK", &v),
+        Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
     }
     true
 }

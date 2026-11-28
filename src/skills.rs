@@ -850,3 +850,284 @@ where
         rune::from_value(output).map_err(|e| format!("rune return value: {e}"))?;
     Ok(text)
 }
+
+const MAX_OSS_SKILL_BYTES: u64 = 512 * 1024;
+
+pub fn resolve_skill_packs_dir() -> Option<std::path::PathBuf> {
+    if let Ok(over) = std::env::var("OPENRO_SKILL_PACKS_DIR") {
+        let trimmed = over.trim();
+        if !trimmed.is_empty() {
+            return Some(std::path::PathBuf::from(trimmed));
+        }
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(std::path::PathBuf::from(home).join(".skill-library").join("packs"))
+}
+
+fn parse_skill_frontmatter(text: &str) -> (String, String) {
+    let mut name = String::new();
+    let mut desc = String::new();
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) == Some("---") {
+        let mut in_desc_block = false;
+        for line in lines {
+            let t = line.trim();
+            if t == "---" {
+                break;
+            }
+            if in_desc_block {
+                if line.starts_with(' ') || line.starts_with('\t') {
+                    if !desc.is_empty() {
+                        desc.push(' ');
+                    }
+                    desc.push_str(t);
+                    continue;
+                } else {
+                    in_desc_block = false;
+                }
+            }
+            if let Some(v) = t.strip_prefix("name:") {
+                name = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            } else if let Some(v) = t.strip_prefix("description:") {
+                let raw = v.trim();
+                if raw == "|" || raw == ">" {
+                    in_desc_block = true;
+                } else {
+                    desc = raw.trim_matches('"').trim_matches('\'').to_string();
+                }
+            }
+        }
+    }
+    if desc.is_empty() {
+        for line in text.lines().take(20) {
+            let t = line.trim();
+            if !t.is_empty() && !t.starts_with("---") && !t.starts_with('#') {
+                desc = t.chars().take(200).collect();
+                break;
+            }
+        }
+    }
+    (name, desc)
+}
+
+fn collect_skill_files_no_symlinks(
+    root: &std::path::Path,
+    cur: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    if depth > 3 || out.len() >= 500 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(cur) else {
+        return;
+    };
+    let mut entries: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            collect_skill_files_no_symlinks(root, &p, depth + 1, out);
+        } else if meta.is_file()
+            && p.file_name().and_then(|n| n.to_str()) == Some("SKILL.md")
+            && meta.len() <= MAX_OSS_SKILL_BYTES
+        {
+            out.push(p);
+        }
+    }
+}
+
+/// Scan `$HOME/.skill-library/packs/` (or `OPENRO_SKILL_PACKS_DIR`) for OSS skills matching `query`.
+pub fn search_oss_skill_packs(query: &str, limit: usize) -> Value {
+    let cap = limit.clamp(1, 100);
+    let q_clean = query.trim();
+    let q_low = q_clean.to_ascii_lowercase();
+    let Some(packs_dir) = resolve_skill_packs_dir() else {
+        return json!({
+            "ok": true,
+            "packs_dir_exists": false,
+            "query": q_clean,
+            "count": 0,
+            "skills": [],
+        });
+    };
+    if !packs_dir.is_dir() {
+        return json!({
+            "ok": true,
+            "packs_dir_exists": false,
+            "query": q_clean,
+            "count": 0,
+            "skills": [],
+        });
+    }
+
+    let mut files = Vec::new();
+    collect_skill_files_no_symlinks(&packs_dir, &packs_dir, 0, &mut files);
+    let mut matches: Vec<Value> = Vec::new();
+
+    for abs in files {
+        let Ok(rel_p) = abs.strip_prefix(&packs_dir) else {
+            continue;
+        };
+        let rel = rel_p.to_string_lossy().replace('\\', "/");
+        let Ok(text) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let (fm_name, desc) = parse_skill_frontmatter(&text);
+        let parts: Vec<&str> = rel.split('/').collect();
+        let pack = parts.first().copied().unwrap_or("");
+        let skill_dir = if parts.len() >= 2 { parts[parts.len() - 2] } else { pack };
+        let name = if fm_name.is_empty() { skill_dir.to_string() } else { fm_name };
+
+        if !q_low.is_empty() {
+            let hay = format!("{rel} {pack} {name} {desc}").to_ascii_lowercase();
+            if !hay.contains(&q_low) {
+                continue;
+            }
+        }
+        matches.push(json!({
+            "path": rel,
+            "pack": pack,
+            "skill": skill_dir,
+            "name": name,
+            "description": desc,
+        }));
+        if matches.len() >= cap {
+            break;
+        }
+    }
+
+    json!({
+        "ok": true,
+        "packs_dir_exists": true,
+        "query": q_clean,
+        "count": matches.len(),
+        "skills": matches,
+    })
+}
+
+/// Safely read a bounded excerpt of a `SKILL.md` (or `.md` file) inside `$HOME/.skill-library/packs/`
+/// (or `OPENRO_SKILL_PACKS_DIR`), enforcing `safe_rel` and CWE-59 symlink checks.
+pub fn read_oss_skill_pack(body: &Value) -> Result<Value, crate::opencloud::Oc> {
+    let raw_path = body
+        .get("path")
+        .or_else(|| body.get("skill"))
+        .or_else(|| body.get("rel"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| crate::opencloud::Oc {
+            status: 400,
+            msg: "skills_read requires non-empty body.path".into(),
+        })?;
+
+    let lower = raw_path.to_ascii_lowercase();
+    if lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%00")
+        || lower.contains("%25")
+    {
+        return Err(crate::opencloud::Oc {
+            status: 400,
+            msg: "invalid skill pack path".into(),
+        });
+    }
+
+    let packs_dir = resolve_skill_packs_dir().ok_or_else(|| crate::opencloud::Oc {
+        status: 404,
+        msg: "skill packs directory unavailable".into(),
+    })?;
+    if !packs_dir.is_dir() {
+        return Err(crate::opencloud::Oc {
+            status: 404,
+            msg: "skill packs directory does not exist".into(),
+        });
+    }
+
+    let mut rel = raw_path.to_string();
+    let candidate = crate::opencloud::safe_rel(&packs_dir, &rel)?;
+    let abs = if candidate.is_dir() {
+        rel = format!("{}/SKILL.md", rel.trim_end_matches('/'));
+        crate::opencloud::safe_rel(&packs_dir, &rel)?
+    } else {
+        candidate
+    };
+
+    let meta = std::fs::symlink_metadata(&abs).map_err(|_| crate::opencloud::Oc {
+        status: 404,
+        msg: format!("skill file '{rel}' not found"),
+    })?;
+    if meta.file_type().is_symlink() {
+        return Err(crate::opencloud::Oc {
+            status: 400,
+            msg: format!("refusing symlinked skill file '{rel}' (CWE-59)"),
+        });
+    }
+    if !meta.is_file() {
+        return Err(crate::opencloud::Oc {
+            status: 400,
+            msg: format!("'{rel}' is not a regular file"),
+        });
+    }
+    if !rel.to_ascii_lowercase().ends_with(".md") {
+        return Err(crate::opencloud::Oc {
+            status: 400,
+            msg: "skills_read only reads markdown (.md) skill files".into(),
+        });
+    }
+    if meta.len() > MAX_OSS_SKILL_BYTES {
+        return Err(crate::opencloud::Oc {
+            status: 400,
+            msg: "skill file exceeds 512 KiB safety limit".into(),
+        });
+    }
+
+    let full_text = std::fs::read_to_string(&abs).map_err(|e| crate::opencloud::Oc {
+        status: 500,
+        msg: format!("read skill '{rel}': {e}"),
+    })?;
+    let lines: Vec<&str> = full_text.lines().collect();
+    let total_lines = lines.len();
+    let start_line = body
+        .get("start_line")
+        .and_then(Value::as_u64)
+        .map(|n| (n as usize).max(1))
+        .unwrap_or(1);
+    let end_line = body
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .map(|n| (n as usize).min(total_lines))
+        .unwrap_or(total_lines);
+    let max_chars = body
+        .get("max_chars")
+        .and_then(Value::as_u64)
+        .unwrap_or(8_000)
+        .clamp(256, 20_000) as usize;
+
+    let sliced = if start_line > end_line || total_lines == 0 {
+        String::new()
+    } else {
+        lines[start_line - 1..end_line].join("\n")
+    };
+    let (content, truncated) = if sliced.chars().count() > max_chars {
+        (sliced.chars().take(max_chars).collect::<String>(), true)
+    } else {
+        (sliced, end_line < total_lines)
+    };
+
+    Ok(json!({
+        "ok": true,
+        "path": rel,
+        "total_lines": total_lines,
+        "start_line": start_line,
+        "end_line": end_line,
+        "truncated": truncated,
+        "content": content,
+    }))
+}

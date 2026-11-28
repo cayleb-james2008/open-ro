@@ -14,11 +14,11 @@ import { open as dialogSpring } from "@/motion";
 import { stamp } from "../ship/api";
 import { AdaptiveAgentCards } from "../AdaptiveAgentCards";
 import {
-  createRun, getAgentTrace, getRun, killAgent, listRuns, postToBoard, restartAgent, resumeRun, stopRun, teamUrl,
-  type AgentState, type BoardPost, type ChatMessage, type FileClaim, type QuotaState, type RunSummary, type Task, type TeamworkSnapshot, type TraceEntry,
+  createRun, getAgentTrace, getProjectContract, getRun, killAgent, listRuns, postToBoard, restartAgent, resumeRun, stopRun, teamUrl,
+  type AgentState, type BoardPost, type ChatMessage, type FileClaim, type ProjectContractSummary, type QuotaState, type RunSummary, type Task, type TeamworkSnapshot, type TraceEntry,
 } from "./api";
 
-const DEFAULT_ROLES = ["researcher", "systems", "ui", "world", "art", "verifier"];
+const DEFAULT_ROLES = ["researcher", "world", "art", "audio", "systems", "ui", "verifier"];
 const RUN_TONE: Record<string, string> = {
   running: "bg-pill-active-bg text-pill-active-fg",
   completed: "bg-tag-sky-bg text-tag-sky-fg",
@@ -188,7 +188,24 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
   const [postText, setPostText] = useState("");
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const [contract, setContract] = useState<ProjectContractSummary | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
+
+  const effectiveProjectId = projectId || snap?.run?.project_id || null;
+
+  const loadContract = useCallback(async (pid: string | null) => {
+    if (!pid) { setContract(null); return; }
+    const r = await getProjectContract(pid);
+    if (r.ok) {
+      setContract({
+        has_contract: Boolean(r.has_contract),
+        active: r.active,
+        total: r.total ?? 0,
+        passed_count: r.passed_count ?? 0,
+        failing_ids: r.failing_ids ?? [],
+      });
+    }
+  }, []);
 
   const loadRuns = useCallback(async () => {
     const r = await listRuns(projectId);
@@ -198,16 +215,19 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
     const list = r.runs ?? [];
     setRuns(list);
     setActiveId((cur) => (cur && list.some((x) => x.id === cur) ? cur : list[0]?.id ?? null));
-  }, [projectId]);
+    void loadContract(projectId || list[0]?.project_id || null);
+  }, [projectId, loadContract]);
 
   const loadRun = useCallback(async (id: string) => {
     const r = await getRun(id);
     if (!r.ok || !r.run) { setErr(r.error || "Could not read team run."); return; }
     setErr("");
     setSnap({ run: r.run, roster: r.roster ?? [], tasks: r.tasks ?? [], claims: r.claims ?? [], board: r.board ?? [] });
-  }, []);
+    void loadContract(projectId || r.run.project_id || null);
+  }, [projectId, loadContract]);
 
   useEffect(() => { void loadRuns(); }, [loadRuns]);
+  useEffect(() => { void loadContract(effectiveProjectId); }, [effectiveProjectId, loadContract]);
   useEffect(() => {
     if (!activeId) { setSnap(null); return; }
     setSelectedAgent(null); setTraceLive({});
@@ -334,6 +354,18 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
         <div className="flex min-w-0 items-center gap-2">
           <Users className="size-4 flex-none text-icon" strokeWidth={1.5} aria-hidden />
           <h2 className="truncate font-heading text-title font-semibold">Teamwork</h2>
+          {contract?.has_contract && (
+            <Pill
+              data-contract-pill
+              className={`px-2 py-0.5 font-mono text-xs tabular-nums ${
+                contract.total > 0 && contract.passed_count === contract.total
+                  ? "bg-pill-active-bg text-pill-active-fg"
+                  : "bg-pill-warn-bg text-pill-warn-fg"
+              }`}
+            >
+              Contract {contract.passed_count}/{contract.total}
+            </Pill>
+          )}
           {runs.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {runs.slice(0, 4).map((r) => (

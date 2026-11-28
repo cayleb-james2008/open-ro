@@ -243,7 +243,13 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"research_roblox_game\", \"args\": {{\"target\": \"<place/universe id or URL>\"}}}} fetches real Roblox metadata & thumbnails into refs/<universeId>/\n\
 - {{\"tool\": \"teardown_game\", \"args\": {{\"target\": \"<place/universe id or URL>\", \"new_niche\": \"...?\"}}}} runs full Live Game Teardown (Badges, GamePasses, Media, YouTube captions/frames, Wiki, 7-pillar E2E spec -> refs/teardowns/<uid>/)\n\
+- {{\"tool\": \"teardown_get\", \"args\": {{\"universe_id\": 12345}}}} / {{\"tool\": \"teardown_play_live\", \"args\": {{\"target\": \"<place/url>\", \"role\": \"hud\"}}}} / {{\"tool\": \"teardown_youtube_frames\", \"args\": {{\"video\": \"<11-char id or url>\", \"timestamps_s\": [30, 90]}}}} reads teardown, captures live Sober player HUD, or extracts YouTube keyframe PNGs\n\
 - {{\"tool\": \"teardown_screenshot\", \"args\": {{\"path\": \"...\", \"role\": \"hud|modal_shop|pack_open\"}}}} / {{\"tool\": \"teardown_spec\", \"args\": {{\"e2e_spec\": {{...}}}}}} records teardown UI screenshots & updates the 7-pillar E2E spec\n\
+- {{\"tool\": \"market_taste_snapshot\", \"args\": {{\"niche\": \"...?\"}}}} / {{\"tool\": \"market_taste_refresh\", \"args\": {{}}}} reads/refreshes Roblox market taste charts & craft dossiers\n\
+- {{\"tool\": \"economy_sim\", \"args\": {{\"apply_suggestions\": false}}}} / {{\"tool\": \"monetization_audit\", \"args\": {{}}}} / {{\"tool\": \"publish_guard\", \"args\": {{\"autofix\": false}}}} / {{\"tool\": \"project_dependencies\", \"args\": {{\"prune\": false}}}} / {{\"tool\": \"project_snapshot\", \"args\": {{\"action\": \"list|create|restore\", \"snapshot_id\": \"...?\"}}}} runs economy simulation, monetization audit, publish guard, dependency pruning, and project snapshots\n\
+- {{\"tool\": \"contract_init\", \"args\": {{\"features\": [{{\"id\": \"f1\", \"title\": \"...\"}}]}}}} / {{\"tool\": \"contract_get\", \"args\": {{}}}} / {{\"tool\": \"contract_verify_update\", \"args\": {{\"id\": \"f1\", \"passed\": true, \"evidence\": \"...\"}}}} manages default-FAIL `.harness/contract.json` (verifier-only `passed: true`)\n\
+- {{\"tool\": \"project_inspect_image\", \"args\": {{\"path\": \"art/ui/x.png\"}}}} inspects PNG/JPEG/WEBP dimensions, sha256, alpha%, border chroma, and dominant hex swatches\n\
+- {{\"tool\": \"skills_search\", \"args\": {{\"query\": \"roblox\", \"limit\": 20}}}} / {{\"tool\": \"skills_read\", \"args\": {{\"path\": \"roblox/roblox-luau/SKILL.md\", \"max_chars\": 8000}}}} discovers & reads OSS skill packs on demand\n\
 - {{\"tool\": \"web_search\", \"args\": {{\"query\": \"...\", \"limit\": 5}}}} and {{\"tool\": \"web_fetch\", \"args\": {{\"url\": \"https://...\"}}}} read-only public web research\n\
 - {{\"tool\": \"reference_search\", \"args\": {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}}}} gathers action reference shots into gitignored art/references/\n\
 - {{\"tool\": \"art_generate\", \"args\": {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [\"art/references/...\"]}}}} generates art (ChatGPT shared browser default; never Higgsfield)\n\
@@ -302,32 +308,23 @@ BATCHED STEPS (RECOMMENDED — saves turns/quota):\n\
 {{\"steps\":[{{\"tool\":\"...\",\"args\":{{...}}}},...],\"done\":true,\"summary\":\"...\"}}\n\
 Steps run in order and abort on first error; omit \"done\" to inspect results. Single-step {{\"tool\":\"...\",\"args\":{{...}}}} and {{\"done\":true,\"summary\":\"...\"}} also work.\n\n\
 PROJECT FILE & BUILD TOOLS:\n\
-- project_list {{}} / project_files {{\"dir\":\"src\"}} / project_read_file {{\"path\":\"src/...\",\"start_line\":1,\"end_line\":200}}\n\
-- project_write_file {{\"path\":\"src/server/Main.server.luau\",\"content\":\"...\"}} / project_edit_file {{\"path\":\"src/...\",\"edits\":[{{\"old\":\"...\",\"new\":\"...\"}}]}} / project_delete_file {{\"path\":\"src/old.luau\"}}\n\
-- project_grep {{\"query\":\"RemoteEvent\",\"dir\":\"src\"}} / project_update_manifest {{\"patch\":{{...}}}} (cannot auto-approve product prices)\n\
-- project_check {{}} (selene/stylua/Luau) / project_symbols {{\"path\":\"...?\"}} / project_typecheck {{}} / project_run_lune {{\"script\":\"tools/sim.luau\"}}\n\
-- sandbox_playtest {{\"timeout_secs\":15,\"journey\":[...]}} (<2s headless Luau sandbox: remotes, DataStores, ProcessReceipt, PlayerGui)\n\
-- project_build {{\"engine\":\"auto\"}} (.rbxlx) / project_scene_get {{}} / project_scene_mutate {{\"ops\":[{{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",...}}]}}\n\
-- gui_save {{\"slug\":\"main-hud\",\"doc\":{{...}}|\"preset\":\"rpg|obby|tycoon|gacha\"}} / gui_compile {{\"slug\":\"main-hud\"}}\n\
-- project_sync {{\"prune\":false}} / project_sync_pull {{\"strategy\":\"merge_non_conflicting\"}} / project_playtest {{\"sync_first\":true,\"suite\":\"playtest/suite.json\"}}\n\n\
+- project_list {{}} / project_files {{dir}} / project_read_file {{path,start_line?,end_line?}} / project_write_file {{path,content}} / project_edit_file {{path,edits}} / project_delete_file {{path}} / project_grep {{query,dir?}} / project_update_manifest {{patch}} (no self-approved prices)\n\
+- project_check {{}} / project_symbols {{path?}} / project_typecheck {{}} / project_run_lune {{script}} / sandbox_playtest {{timeout_secs,journey?}} / project_build {{engine}}\n\
+- project_scene_get {{}} / project_scene_mutate {{ops}} (upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo; class_name: Part|Model|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance)\n\
+- gui_save {{slug,doc|preset}} / gui_compile {{slug}} / project_sync {{prune}} / project_sync_pull {{strategy}} / project_playtest {{sync_first,suite}}\n\n\
 Studio-Native First & LIVE CUA TOOLS:\n\
-- Push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
-- Use `studio_cua_*` over the headed Studio window for native Studio UI/dialogs outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor).\n\
-- Use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for assets Studio cannot do natively.\n\
-- Studio-Native & CUA: studio_cua_screenshot/studio_cua_mouse/studio_cua_keyboard/studio_cua_window, studio_stage_content, studio_verify_device {{profile}}, studio_verify_audio, studio_verify_ui_craft {{offline:false}}\n\
-\n\
+- Push Luau/ScreenGui/instances to Studio via MCP/Rojo (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`). Use `studio_cua_*` for native Studio UI outside MCP; local adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for external assets.\n\
+- CUA & Bridge: studio_cua_screenshot/studio_cua_mouse/studio_cua_keyboard/studio_cua_window, studio_stage_content, studio_verify_device {{profile}}, studio_verify_audio, studio_verify_ui_craft {{offline}}\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
-- research_roblox_game {{target}} / teardown_game {{target,new_niche?}} / teardown_screenshot {{path,role}} / teardown_spec {{e2e_spec}} / web_search {{query,limit}} / web_fetch {{url}} / reference_search {{query,character,show}}\n\
+- research_roblox_game {{target}} / teardown_game {{target,new_niche?}} / teardown_get {{universe_id?}} / teardown_play_live {{target,role?}} / teardown_youtube_frames {{video,timestamps_s}} / teardown_screenshot {{path,role}} / teardown_spec {{e2e_spec}} / market_taste_snapshot {{niche?}} / market_taste_refresh {{}} / web_search {{query,limit}} / web_fetch {{url}} / reference_search {{query,character,show}}\n\
+- economy_sim / monetization_audit / publish_guard {{autofix?}} / project_dependencies {{prune?}} / project_snapshot {{action:\"list|create|restore\"}} / project_inspect_image {{path}} / skills_search {{query?}} / skills_read {{path}} / contract_init {{features}} / contract_get / contract_verify_update {{id,passed,evidence}}\n\
 - art_generate {{prompt,out_path,references}} (ChatGPT default; never Higgsfield) / image_process {{input,output,ops}} / art_pack_card {{card_id}}\n\
-- ui_kit_presets {{}} / ui_kit_generate {{layout:\"skybridge-crest\",skin:\"anime-pop-dark\",sheet:\"chrome_sheet|panels_sheet|cartoon_icons_sheet\"}} (UI Craft (10 Rules): generate panels_sheet+cartoon_icons_sheet+card_borders_sheet; bind >=70% sliced PNGs w/ BackgroundTransparency=1 & dense grids; verify via studio_verify_ui_craft)\n\
-- mesh_generate {{name,description,script}} / blender_build_map {{preset:\"arcane-dungeon-sanctum\"}} / audio_generate {{name,preset,recipe,duration_ms}} / sfx_pack_list|install|search|use / music_search|import (copyright-free BGM) / OSS tools via adapter_invoke (blender-mcp-oss, luau-lsp-cli, darklua-cli, asphalt-cli, rokit-cli)\n\
-- adapter_list {{\"capability\":\"...?\"}} / adapter_invoke {{\"capability\":\"...\",\"adapter_id\":\"...?\",\"params\":{{...}}}}\n\
-- opencloud_status {{}} / creator_hub_status {{\"check_login\":true,\"save_creator\":true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
-- assets_authorise {{\"paths\":[...]}} / assets_upload {{\"paths\":[...],\"max_audio_uploads\":5}} / assets_moderation_poll {{}} / assets_codegen {{\"studio_local_fallback\":true}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
-- liveops_datastore_list {{}} / liveops_datastore_get {{store,key}} / liveops_datastore_set {{...,confirm:true}} / liveops_messaging_publish {{topic,message,confirm:true}} / liveops_remote_config_push {{config,generate_luau,push_to_datastore}} / liveops_telemetry_codegen {{mode,store_name,flush_interval_secs}} / liveops_telemetry_sync {{source,days}} / liveops_telemetry_summary {{}}\n\
-- project_publish {{\"versionType\":\"Saved\"}} (live \"Published\" needs confirm: true)\n\n\
+- ui_kit_presets {{}} / ui_kit_generate {{layout,skin,sheet}} (UI Craft (10 Rules): panels_sheet+cartoon_icons_sheet+card_borders_sheet; >=70% sliced PNGs w/ BackgroundTransparency=1; studio_verify_ui_craft)\n\
+- mesh_generate {{name,description,script}} / blender_build_map {{preset:\"arcane-dungeon-sanctum\"}} / audio_generate {{name,preset,recipe,duration_ms}} / sfx_pack_list|install|search|use / music_search|import / adapter_list|invoke\n\
+- opencloud_status / creator_hub_status / creator_hub_setup / creator_hub_configure / assets_authorise / assets_upload / assets_moderation_poll / assets_codegen / products_sync / products_codegen / universe_get / universe_set\n\
+- liveops_datastore_list / liveops_datastore_get / liveops_datastore_set {{confirm:true}} / liveops_messaging_publish {{confirm:true}} / liveops_remote_config_push / liveops_telemetry_codegen / liveops_telemetry_sync / liveops_telemetry_summary / project_publish {{versionType:\"Saved\"}} (Published needs confirm:true)\n\n\
 STUDY & EVIDENCE (Study -> Build -> Check -> Refine):\n\
-- evidence_record {{summary,confidence,kind,source}} / evidence_list {{confidence?,limit?}} / unknown_add {{title,question,severity,domain}} / unknowns_list {{status?}} / unknown_update {{id,expected_revision,status,resolution,evidence_for}} / mechanics_check {{path,strict?}} / study_status {{}}\n\n\
+- evidence_record {{summary,confidence,kind,source}} / evidence_list / unknown_add / unknowns_list / unknown_update {{id,expected_revision,status,resolution,evidence_for}} / mechanics_check {{path,strict?}} / study_status {{}}\n\n\
 3D, VFX & UI GUARDRAILS:\n\
 - PartType.Cylinder runs along LOCAL X: upright pillars MUST use Size=Vector3.new(h,d,d) + CFrame.Angles(0,0,math.rad(90)).\n\
 - Mobile: <=20k tris/mesh, <=40 ParticleEmitters, <=12 non-shadow lights; clean VFX/Sounds via Debris/pooling; Settings-only Light/Dark + ReducedMotion; bind assets/meshes/manifest.json + AssetIds.luau.\n\
@@ -582,6 +579,9 @@ pub struct AgentHooks {
     pub studio_verify_audio: Option<HookFn>,
     pub studio_verify_ui_craft: Option<HookFn>,
     pub assets_moderation_poll: Option<HookFn>,
+    pub market_taste_snapshot: Option<HookFn>,
+    pub market_taste_refresh: Option<HookFn>,
+    pub project_snapshot: Option<HookFn>,
 }
 
 impl Agent {
@@ -3088,43 +3088,7 @@ impl Agent {
                                         unproven_changes = true;
                                         self.note_change(chat_id);
                                     }
-                                } else if matches!(
-                                    other,
-                                    "art_generate"
-                                        | "image_process"
-                                        | "art_pack_card"
-                                        | "ui_kit_generate"
-                                        | "mesh_generate"
-                                        | "blender_generate"
-                                        | "blender_build_map"
-                                        | "audio_generate"
-                                        | "sfx_pack_install"
-                                        | "sfx_pack_use"
-                                        | "music_import"
-                                        | "assets_upload"
-                                        | "assets_moderation_poll"
-                                        | "studio_stage_content"
-                                        | "creator_hub_setup"
-                                        | "creator_hub_configure"
-                                        | "assets_authorise"
-                                        | "assets_codegen"
-                                        | "products_sync"
-                                        | "products_codegen"
-                                        | "project_publish"
-                                        | "universe_set"
-                                        | "liveops_datastore_set"
-                                        | "liveops_messaging_publish"
-                                        | "liveops_remote_config_push"
-                                        | "liveops_telemetry_codegen"
-                                        | "liveops_telemetry_sync"
-                                        | "adapter_invoke"
-                                        | "evidence_record"
-                                        | "teardown_game"
-                                        | "teardown_screenshot"
-                                        | "teardown_spec"
-                                        | "unknown_add"
-                                        | "unknown_update"
-                                ) {
+                                } else if is_mutating_agent_tool(other, &args) {
                                     changes_made += 1;
                                 }
                                 results.push(format!("step[{b_idx}] {note}"));
@@ -3574,43 +3538,7 @@ impl Agent {
                                 unproven_changes = true;
                                 self.note_change(chat_id);
                             }
-                        } else if matches!(
-                            tool,
-                            "art_generate"
-                                | "image_process"
-                                | "art_pack_card"
-                                | "ui_kit_generate"
-                                | "mesh_generate"
-                                | "blender_generate"
-                                | "blender_build_map"
-                                | "audio_generate"
-                                | "sfx_pack_install"
-                                | "sfx_pack_use"
-                                | "music_import"
-                                | "assets_upload"
-                                | "assets_moderation_poll"
-                                | "studio_stage_content"
-                                | "creator_hub_setup"
-                                | "creator_hub_configure"
-                                | "assets_authorise"
-                                | "assets_codegen"
-                                | "products_sync"
-                                | "products_codegen"
-                                | "project_publish"
-                                | "universe_set"
-                                | "liveops_datastore_set"
-                                | "liveops_messaging_publish"
-                                | "liveops_remote_config_push"
-                                | "liveops_telemetry_codegen"
-                                | "liveops_telemetry_sync"
-                                | "adapter_invoke"
-                                | "evidence_record"
-                                | "teardown_game"
-                                | "teardown_screenshot"
-                                | "teardown_spec"
-                                | "unknown_add"
-                                | "unknown_update"
-                        ) {
+                        } else if is_mutating_agent_tool(tool, &args) {
                             changes_made += 1;
                         }
                         messages.push(json!({ "role": "user", "content": note }));
@@ -4812,6 +4740,189 @@ impl Agent {
                 transcript.push(format!("tool teardown_spec -> {text}"));
                 Ok(format!("tool_result: teardown_spec: {text}"))
             }
+            "teardown_get" => {
+                let proj = self.require_project_root()?;
+                let uid = args
+                    .get("universe_id")
+                    .or_else(|| args.get("teardown_id"))
+                    .and_then(Value::as_u64);
+                let res = match crate::teardown::get_teardown(&proj, uid) {
+                    Ok(v) => v,
+                    Err(oc) if oc.status == 404 && uid.is_none() => json!({
+                        "ok": true,
+                        "has_teardown": false,
+                        "screenshots": [],
+                        "recommended_ui_reference_screenshots": [],
+                    }),
+                    Err(oc) => return Err(oc.msg),
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool teardown_get -> {text}"));
+                Ok(format!("tool_result: teardown_get: {text}"))
+            }
+            "teardown_play_live" => {
+                let proj = self.require_project_root()?;
+                let res = crate::teardown::teardown_play_live(&proj, args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool teardown_play_live -> {text}"));
+                Ok(format!("tool_result: teardown_play_live: {text}"))
+            }
+            "teardown_youtube_frames" => {
+                let proj = self.require_project_root()?;
+                let res = crate::teardown::teardown_youtube_frames(&proj, args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool teardown_youtube_frames -> {text}"));
+                Ok(format!("tool_result: teardown_youtube_frames: {text}"))
+            }
+            "market_taste_snapshot" => {
+                let res = if let Some(hook) = &self.hooks.market_taste_snapshot {
+                    hook(args)?
+                } else {
+                    let niche = match args
+                        .get("niche")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        Some(raw) => Some(crate::market_taste::normalize_niche_id(raw)?),
+                        None => None,
+                    };
+                    let root = self.effective_assets_root();
+                    crate::market_taste::MarketTasteStore::open(&root).snapshot_json(niche)
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool market_taste_snapshot -> {text}"));
+                Ok(format!("tool_result: market_taste_snapshot: {text}"))
+            }
+            "market_taste_refresh" => {
+                let res = if let Some(hook) = &self.hooks.market_taste_refresh {
+                    hook(args)?
+                } else {
+                    let root = self.effective_assets_root();
+                    crate::market_taste::MarketTasteStore::open(&root)
+                        .refresh_live(std::time::Duration::from_secs(12))?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool market_taste_refresh -> {text}"));
+                Ok(format!("tool_result: market_taste_refresh: {text}"))
+            }
+            "economy_sim" => {
+                let r = self.agent_project_ref()?;
+                let srv = crate::server::Shared::new(None, "openro".into());
+                let res = reply_to_value(crate::playtest::run_project_economy_sim_post(&srv, &r, args))?;
+                let text = res.to_string();
+                transcript.push(format!("tool economy_sim -> {text}"));
+                Ok(format!("tool_result: economy_sim: {text}"))
+            }
+            "monetization_audit" => {
+                let r = self.agent_project_ref()?;
+                let srv = crate::server::Shared::new(None, "openro".into());
+                let res = reply_to_value(crate::playtest::repair_project_monetization_audit(&srv, &r, args))?;
+                let text = res.to_string();
+                transcript.push(format!("tool monetization_audit -> {text}"));
+                Ok(format!("tool_result: monetization_audit: {text}"))
+            }
+            "publish_guard" => {
+                let r = self.agent_project_ref()?;
+                let res = if args.get("autofix").and_then(Value::as_bool) == Some(true) {
+                    let srv = crate::server::Shared::new(None, "openro".into());
+                    reply_to_value(crate::playtest::autofix_project_publish_guard(&srv, &r, args))?
+                } else {
+                    crate::playtest::project_publish_guard(&r)
+                        .map_err(|rep| reply_to_value(Err(rep)).unwrap_err())?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool publish_guard -> {text}"));
+                Ok(format!("tool_result: publish_guard: {text}"))
+            }
+            "project_dependencies" => {
+                let r = self.agent_project_ref()?;
+                let res = if args.get("prune").and_then(Value::as_bool) == Some(true) {
+                    reply_to_value(crate::playtest::prune_or_fix_dependencies(&r))?
+                } else {
+                    crate::playtest::project_dependencies_report(&r)
+                        .map_err(|rep| reply_to_value(Err(rep)).unwrap_err())?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_dependencies -> {text}"));
+                Ok(format!("tool_result: project_dependencies: {text}"))
+            }
+            "project_snapshot" => {
+                let res = if let Some(hook) = &self.hooks.project_snapshot {
+                    hook(args)?
+                } else {
+                    let r = self.agent_project_ref()?;
+                    let action = args.get("action").and_then(Value::as_str).unwrap_or("list").trim();
+                    match action {
+                        "list" => crate::playtest::list_project_snapshots(&r)
+                            .map_err(|rep| reply_to_value(Err(rep)).unwrap_err())?,
+                        "create" => reply_to_value(crate::playtest::create_project_snapshot(&r, args))?,
+                        "restore" => {
+                            let sid = args
+                                .get("snapshot_id")
+                                .or_else(|| args.get("id"))
+                                .or_else(|| args.get("sid"))
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .ok_or("project_snapshot action:'restore' requires args.snapshot_id")?;
+                            let srv = crate::server::Shared::new(None, "openro".into());
+                            reply_to_value(crate::playtest::restore_project_snapshot(&srv, &r, sid, args))?
+                        }
+                        other => return Err(format!("unknown project_snapshot action '{other}'")),
+                    }
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_snapshot -> {text}"));
+                Ok(format!("tool_result: project_snapshot: {text}"))
+            }
+            "contract_init" => {
+                let proj = self.require_project_root()?;
+                let res = crate::contract::contract_init(&proj, args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool contract_init -> {text}"));
+                Ok(format!("tool_result: contract_init: {text}"))
+            }
+            "contract_get" => {
+                let proj = self.require_project_root()?;
+                let res = crate::contract::contract_get(&proj).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool contract_get -> {text}"));
+                Ok(format!("tool_result: contract_get: {text}"))
+            }
+            "contract_verify_update" => {
+                let proj = self.require_project_root()?;
+                let res = crate::contract::contract_verify_update(&proj, args, "agent")
+                    .map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool contract_verify_update -> {text}"));
+                Ok(format!("tool_result: contract_verify_update: {text}"))
+            }
+            "project_inspect_image" => {
+                let proj = self.require_project_root()?;
+                let res = crate::image_ops::inspect_project_image(&proj, args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_inspect_image -> {text}"));
+                Ok(format!("tool_result: project_inspect_image: {text}"))
+            }
+            "skills_search" => {
+                let q = args
+                    .get("query")
+                    .or_else(|| args.get("q"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+                let res = crate::skills::search_oss_skill_packs(q, limit);
+                let text = res.to_string();
+                transcript.push(format!("tool skills_search -> {text}"));
+                Ok(format!("tool_result: skills_search: {text}"))
+            }
+            "skills_read" => {
+                let res = crate::skills::read_oss_skill_pack(args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool skills_read -> {text}"));
+                Ok(format!("tool_result: skills_read: {text}"))
+            }
             "web_fetch" => {
                 let url = args
                     .get("url")
@@ -5500,15 +5611,22 @@ impl Agent {
         }
     }
 
-    /// The previous source of `path` (or None if absent), read WITHOUT
-    /// recording anything. Callers record it only after the change
-    /// itself succeeds — a failed tool call must never enter the
-    /// change set.
-    /// The previous state of a script path recorded by THIS ask.
-    /// Outer None = not recorded by this ask; inner None = recorded
-    /// as absent. Stored sets from earlier asks are never consulted:
-    /// their checkpoints describe the place before THOSE asks, and a
-    /// new ask's prev must come from the tree as it is now.
+    fn agent_project_ref(&self) -> Result<crate::projects::ProjectRef, String> {
+        let dir = self.require_project_root()?;
+        let id = self
+            .project_id
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                dir.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(crate::projects::slug)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "project".to_string())
+            });
+        Ok(crate::projects::ProjectRef { id, dir })
+    }
+
     fn recorded_prev_script(&self, path: &str) -> Option<Option<String>> {
         self.current_changes.iter().find_map(|c| match c {
             Change::Script(p, prev, _) if p == path => Some(prev.clone()),
@@ -6128,6 +6246,74 @@ fn load_proof(path: &std::path::Path, recovered: &mut Vec<String>) -> HashMap<St
 
 /// The display name of the idea that adds a skill (e.g. "Money that saves"
 /// for currency). Internal skill ids never reach the user through this.
+fn reply_to_value(res: Result<crate::project_api::Reply, crate::project_api::Reply>) -> Result<Value, String> {
+    match res {
+        Ok(rep) => Ok(serde_json::from_slice(&rep.body)
+            .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&rep.body).into_owned() }))),
+        Err(rep) => {
+            let msg = serde_json::from_slice::<Value>(&rep.body)
+                .ok()
+                .and_then(|v| v.get("error").and_then(Value::as_str).map(String::from))
+                .unwrap_or_else(|| String::from_utf8_lossy(&rep.body).trim().to_string());
+            Err(msg)
+        }
+    }
+}
+
+fn is_mutating_agent_tool(tool: &str, args: &Value) -> bool {
+    match tool {
+        "economy_sim" => args.get("apply_suggestions").and_then(Value::as_bool) == Some(true),
+        "publish_guard" => args.get("autofix").and_then(Value::as_bool) == Some(true),
+        "project_dependencies" => args.get("prune").and_then(Value::as_bool) == Some(true),
+        "project_snapshot" => matches!(
+            args.get("action").and_then(Value::as_str).unwrap_or("list"),
+            "create" | "restore"
+        ),
+        _ => matches!(
+            tool,
+            "art_generate"
+                | "image_process"
+                | "art_pack_card"
+                | "ui_kit_generate"
+                | "mesh_generate"
+                | "blender_generate"
+                | "blender_build_map"
+                | "audio_generate"
+                | "sfx_pack_install"
+                | "sfx_pack_use"
+                | "music_import"
+                | "assets_upload"
+                | "assets_moderation_poll"
+                | "studio_stage_content"
+                | "creator_hub_setup"
+                | "creator_hub_configure"
+                | "assets_authorise"
+                | "assets_codegen"
+                | "products_sync"
+                | "products_codegen"
+                | "project_publish"
+                | "universe_set"
+                | "liveops_datastore_set"
+                | "liveops_messaging_publish"
+                | "liveops_remote_config_push"
+                | "liveops_telemetry_codegen"
+                | "liveops_telemetry_sync"
+                | "adapter_invoke"
+                | "evidence_record"
+                | "teardown_game"
+                | "teardown_screenshot"
+                | "teardown_spec"
+                | "teardown_play_live"
+                | "teardown_youtube_frames"
+                | "monetization_audit"
+                | "contract_init"
+                | "contract_verify_update"
+                | "unknown_add"
+                | "unknown_update"
+        ),
+    }
+}
+
 pub fn idea_title_for_skill(sk: &str) -> String {
     let all = crate::ideas::catalogue();
     let id = format!("add-{sk}");

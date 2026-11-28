@@ -1766,3 +1766,609 @@ pub fn default_teardown_ui_references(project_dir: &Path, teardown_id: Option<u6
     }
     out
 }
+
+#[cfg(target_os = "linux")]
+fn find_binary_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let cand = dir.join(name);
+        if cand.is_file() {
+            return Some(cand);
+        }
+        #[cfg(windows)]
+        {
+            let exe = dir.join(format!("{name}.exe"));
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+    }
+    None
+}
+
+fn load_or_init_teardown(
+    project_dir: &Path,
+    uid_opt: Option<u64>,
+    place_id_hint: Option<u64>,
+    target_hint: &str,
+) -> Result<Value, Oc> {
+    match get_teardown(project_dir, uid_opt) {
+        Ok(doc) => Ok(doc),
+        Err(oc) if oc.status == 404 => {
+            let uid = uid_opt
+                .or(place_id_hint)
+                .filter(|&u| u > 0)
+                .ok_or_else(|| bad("no teardown found; provide universe_id or a valid Roblox target"))?;
+            let place_id = place_id_hint.unwrap_or(0);
+            let game = json!({
+                "universe_id": uid,
+                "root_place_id": place_id,
+                "name": format!("Roblox Game {uid}"),
+                "genre": "All",
+                "niche": "simulator",
+                "playing": 0,
+                "visits": 0,
+                "like_ratio_pct": 0.0,
+            });
+            let yt = json!({ "ok": true, "skipped": true, "video_count": 0, "videos": [] });
+            let wiki = json!({ "ok": true, "skipped": true, "page_count": 0, "pages": [] });
+            let e2e_spec = build_e2e_spec(&game, &[], &[], &yt, &wiki, None);
+            Ok(json!({
+                "ok": true,
+                "has_teardown": true,
+                "schema": "openro.teardown.v1",
+                "universe_id": uid,
+                "root_place_id": place_id,
+                "target": target_hint,
+                "researched_at": now_iso(),
+                "researched_at_ms": now_ms(),
+                "game": game,
+                "badges": [],
+                "game_passes": [],
+                "media": [],
+                "youtube_research": yt,
+                "wiki_research": wiki,
+                "screenshots": [],
+                "recommended_ui_reference_screenshots": [],
+                "e2e_spec": e2e_spec,
+                "warnings": [],
+            }))
+        }
+        Err(oc) => Err(oc),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_teardown_png_bytes(
+    project_dir: &Path,
+    doc: &mut Value,
+    bytes: &[u8],
+    filename_hint: &str,
+    role: &str,
+    source: &str,
+    timestamp_s: Option<f64>,
+    notes: &str,
+    copy_observed: Value,
+) -> Result<Value, Oc> {
+    if bytes.len() > MAX_SCREENSHOT_BYTES {
+        return Err(bad("screenshot exceeds 20 MiB limit"));
+    }
+    if !bytes.starts_with(PNG_MAGIC) {
+        return Err(bad("screenshot is not a valid PNG file"));
+    }
+    let uid = doc["universe_id"]
+        .as_u64()
+        .filter(|&u| u > 0)
+        .ok_or_else(|| bad("teardown missing universe_id"))?;
+    let base_name = sanitize_png_filename(filename_hint);
+    let hash8 = &sha256_hex(bytes)[..8];
+    let stem = base_name.strip_suffix(".png").unwrap_or(&base_name);
+    let dst_rel = format!("refs/teardowns/{uid}/screenshots/{stem}_{hash8}.png");
+    let dst_abs = safe_rel(project_dir, &dst_rel)?;
+    write_atomic_bytes(&dst_abs, bytes)?;
+
+    let entry = json!({
+        "path": dst_rel,
+        "role": role,
+        "source": source,
+        "timestamp_s": timestamp_s,
+        "notes": notes,
+        "copy_observed": copy_observed,
+    });
+    let screens = doc
+        .get_mut("screenshots")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| err(500, "teardown screenshots field is not an array"))?;
+    if let Some(existing) = screens
+        .iter_mut()
+        .find(|s| s.get("path").and_then(Value::as_str) == Some(&dst_rel))
+    {
+        *existing = entry.clone();
+    } else {
+        screens.push(entry.clone());
+    }
+    let rec = recompute_recommended_ui_refs(project_dir, screens);
+    doc["recommended_ui_reference_screenshots"] = json!(rec);
+    Ok(entry)
+}
+
+fn parse_strict_youtube_video(raw: &str) -> Result<(String, String), Oc> {
+    let trimmed = raw.trim();
+    if trimmed.len() == 11
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        let rebuilt = format!("https://www.youtube.com/watch?v={trimmed}");
+        return validate_youtube_url(&rebuilt).map_err(bad);
+    }
+    validate_youtube_url(trimmed).map_err(bad)
+}
+
+fn read_verified_png_file(path: &Path) -> Result<Vec<u8>, Oc> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|_| err(404, format!("PNG file '{}' not found", path.display())))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(bad(format!(
+            "refusing non-regular or symlinked PNG '{}'",
+            path.display()
+        )));
+    }
+    if meta.len() > MAX_SCREENSHOT_BYTES as u64 {
+        return Err(bad("PNG screenshot exceeds 20 MiB limit"));
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|e| err(500, format!("read PNG '{}': {e}", path.display())))?;
+    if !bytes.starts_with(PNG_MAGIC) {
+        return Err(bad(format!("'{}' is not a valid PNG", path.display())));
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn capture_desktop_png_safe(out_png: &Path) -> Result<(&'static str, Vec<u8>), Oc> {
+    let out_str = out_png.to_string_lossy().into_owned();
+    let timeout = Duration::from_secs(15);
+    if let Some(import_bin) = find_binary_on_path("import") {
+        let argv = vec!["-window".to_string(), "root".to_string(), out_str.clone()];
+        if let Ok(run) = run_argv_with_timeout(&import_bin, &argv, timeout) {
+            if !run.timed_out && run.code == Some(0) {
+                if let Ok(bytes) = read_verified_png_file(out_png) {
+                    return Ok(("import", bytes));
+                }
+            }
+        }
+    }
+    if let Some(grim_bin) = find_binary_on_path("grim") {
+        let argv = vec![out_str.clone()];
+        if let Ok(run) = run_argv_with_timeout(&grim_bin, &argv, timeout) {
+            if !run.timed_out && run.code == Some(0) {
+                if let Ok(bytes) = read_verified_png_file(out_png) {
+                    return Ok(("grim", bytes));
+                }
+            }
+        }
+    }
+    if let Some(ffmpeg_bin) = find_ffmpeg_binary() {
+        let display = std::env::var("DISPLAY")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| ":0".to_string());
+        let argv = vec![
+            "-nostdin".to_string(),
+            "-hide_banner".to_string(),
+            "-loglevel".to_string(),
+            "error".to_string(),
+            "-y".to_string(),
+            "-f".to_string(),
+            "x11grab".to_string(),
+            "-video_size".to_string(),
+            "1280x720".to_string(),
+            "-i".to_string(),
+            display,
+            "-frames:v".to_string(),
+            "1".to_string(),
+            out_str,
+        ];
+        if let Ok(run) = run_argv_with_timeout(&ffmpeg_bin, &argv, timeout) {
+            if !run.timed_out && run.code == Some(0) {
+                if let Ok(bytes) = read_verified_png_file(out_png) {
+                    return Ok(("ffmpeg", bytes));
+                }
+            }
+        }
+    }
+    Err(err(
+        503,
+        "no screenshot capture tool (import, grim, or ffmpeg x11grab) succeeded on this display",
+    ))
+}
+
+/// Launch Sober (`org.vinegarhq.Sober`) for a live Roblox place, capture a screenshot cleanly,
+/// register it into `refs/teardowns/<uid>/screenshots/` (`source: "live_player"`), and
+/// terminate only the tracked child PID. Never bypasses auth/2FA/CAPTCHA.
+pub fn teardown_play_live(project_dir: &Path, body: &Value) -> Result<Value, Oc> {
+    let target_raw = body
+        .get("target")
+        .or_else(|| body.get("url"))
+        .or_else(|| body.get("place_id"))
+        .and_then(|v| {
+            v.as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        });
+    let uid_opt = body
+        .get("universe_id")
+        .or_else(|| body.get("teardown_id"))
+        .and_then(Value::as_u64)
+        .filter(|&u| u > 0);
+    let parsed_target = match target_raw.as_deref() {
+        Some(raw) => Some(crate::market_taste::parse_roblox_id_input(raw).map_err(bad)?),
+        None => None,
+    };
+    let place_hint = body
+        .get("place_id")
+        .and_then(Value::as_u64)
+        .filter(|&p| p > 0)
+        .or_else(|| parsed_target.map(|(id, _)| id));
+
+    if std::env::var("OPENRO_TEARDOWN_LIVE_AUTH_REQUIRED")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        return Ok(json!({
+            "ok": false,
+            "status": "action_required",
+            "blocked_reason": "auth_required",
+            "message": "Roblox login, 2FA, or CAPTCHA requires manual completion in Sober; OpenRO never bypasses auth.",
+            "place_id": place_hint,
+        }));
+    }
+
+    let role = body
+        .get("role")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("hud");
+    let wait_secs = body
+        .get("wait_secs")
+        .and_then(Value::as_u64)
+        .unwrap_or(12)
+        .clamp(5, 30);
+    let notes = body
+        .get("notes")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Live Sober player screenshot");
+
+    let mut doc = load_or_init_teardown(
+        project_dir,
+        uid_opt,
+        place_hint,
+        target_raw.as_deref().unwrap_or(""),
+    )?;
+    let place_id = place_hint
+        .or_else(|| doc.get("root_place_id").and_then(Value::as_u64))
+        .filter(|&p| p > 0)
+        .ok_or_else(|| bad("teardown_play_live requires a valid Roblox Place ID or URL in body.target"))?;
+
+    let (capture_mode, bytes, child_pid) =
+        if let Ok(mock_path) = std::env::var("OPENRO_TEARDOWN_LIVE_MOCK_PNG") {
+            let trimmed = mock_path.trim();
+            if !trimmed.is_empty() {
+                let b = read_verified_png_file(Path::new(trimmed))?;
+                ("mock", b, None::<u32>)
+            } else {
+                return Err(bad("OPENRO_TEARDOWN_LIVE_MOCK_PNG is empty"));
+            }
+        } else {
+            #[cfg(target_os = "linux")]
+            {
+                let flatpak = find_binary_on_path("flatpak").ok_or_else(|| {
+                    err(
+                        503,
+                        "flatpak not found on PATH; Sober live player capture requires flatpak + org.vinegarhq.Sober",
+                    )
+                })?;
+                let mut child = std::process::Command::new(&flatpak)
+                    .args([
+                        "run",
+                        "org.vinegarhq.Sober",
+                        &format!("roblox://placeId={place_id}"),
+                    ])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| err(503, format!("failed to launch Sober via flatpak: {e}")))?;
+                let pid = child.id();
+                let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        if !status.success() {
+                            return Err(err(
+                                502,
+                                format!("Sober exited early with status {status}"),
+                            ));
+                        }
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+
+                let tmp_dir = std::env::temp_dir().join(format!(
+                    "openro-teardown-live-{}-{}",
+                    std::process::id(),
+                    TEARDOWN_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+                ));
+                let _ = std::fs::create_dir_all(&tmp_dir);
+                let _tmp_guard = TempDirGuard(tmp_dir.clone());
+                let cap_res = capture_desktop_png_safe(&tmp_dir.join("live_capture.png"));
+                let _ = child.kill();
+                let _ = child.wait();
+                let (method, png_bytes) = cap_res?;
+                (method, png_bytes, Some(pid))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err(err(
+                    501,
+                    "live Sober player capture is only supported on Linux (set OPENRO_TEARDOWN_LIVE_MOCK_PNG for offline tests)",
+                ));
+            }
+        };
+
+    let fname = format!("live_sober_{role}_{place_id}.png");
+    let entry = upsert_teardown_png_bytes(
+        project_dir,
+        &mut doc,
+        &bytes,
+        &fname,
+        role,
+        "live_player",
+        None,
+        notes,
+        json!([]),
+    )?;
+    save_teardown_files(project_dir, &mut doc, true)?;
+
+    Ok(json!({
+        "ok": true,
+        "status": "captured",
+        "mode": capture_mode,
+        "universe_id": doc["universe_id"],
+        "place_id": place_id,
+        "child_pid": child_pid,
+        "wait_secs": wait_secs,
+        "screenshot": entry,
+        "recommended_ui_reference_screenshots": doc["recommended_ui_reference_screenshots"],
+        "teardown_json_path": doc["teardown_json_path"],
+        "teardown_md_path": doc["teardown_md_path"],
+    }))
+}
+
+/// Extract PNG keyframes from a strict 11-char YouTube video at requested timestamps
+/// (`OPENRO_TEARDOWN_YT_FRAMES_MOCK_DIR` supported for offline tests) and register them
+/// into `refs/teardowns/<uid>/screenshots/` + `teardown.json` + `TEARDOWN.md`.
+pub fn teardown_youtube_frames(project_dir: &Path, body: &Value) -> Result<Value, Oc> {
+    let raw_video = body
+        .get("video")
+        .or_else(|| body.get("url"))
+        .or_else(|| body.get("video_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad("teardown_youtube_frames requires body.video (11-char YouTube ID or URL)"))?;
+    let (vid, watch_url) = parse_strict_youtube_video(raw_video)?;
+
+    let raw_ts = body
+        .get("timestamps_s")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("teardown_youtube_frames requires non-empty body.timestamps_s array"))?;
+    if raw_ts.is_empty() {
+        return Err(bad("body.timestamps_s must contain at least 1 timestamp"));
+    }
+    let mut timestamps: Vec<f64> = Vec::with_capacity(raw_ts.len().min(12));
+    for item in raw_ts.iter().take(12) {
+        let Some(t) = item.as_f64() else {
+            return Err(bad("timestamps_s entries must be numbers"));
+        };
+        if !t.is_finite() || t < 0.0 || t > 36_000.0 {
+            return Err(bad("timestamps_s values must be between 0 and 36000 seconds"));
+        }
+        timestamps.push(t);
+    }
+
+    let roles: Vec<String> = body
+        .get("roles")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("youtube_frame")
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let uid_opt = body
+        .get("universe_id")
+        .or_else(|| body.get("teardown_id"))
+        .and_then(Value::as_u64)
+        .filter(|&u| u > 0);
+    let mut doc = load_or_init_teardown(project_dir, uid_opt, None, &watch_url)?;
+
+    let mut captured_entries: Vec<Value> = Vec::new();
+    let mock_dir_var = std::env::var("OPENRO_TEARDOWN_YT_FRAMES_MOCK_DIR")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some(mock_dir_str) = mock_dir_var {
+        let mock_dir = PathBuf::from(&mock_dir_str);
+        if !mock_dir.is_dir() {
+            return Err(err(400, "OPENRO_TEARDOWN_YT_FRAMES_MOCK_DIR is not a directory"));
+        }
+        let mut fallback_pngs: Vec<PathBuf> = std::fs::read_dir(&mock_dir)
+            .map_err(|e| err(500, format!("read mock frames dir: {e}")))?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+            })
+            .collect();
+        fallback_pngs.sort();
+
+        for (idx, &ts) in timestamps.iter().enumerate() {
+            let role = roles
+                .get(idx)
+                .map(String::as_str)
+                .unwrap_or("youtube_frame");
+            let ts_int = ts.round() as u64;
+            let cand1 = mock_dir.join(format!("{vid}_{ts_int}.png"));
+            let cand2 = mock_dir.join(format!("frame_{idx}.png"));
+            let src = if cand1.exists() {
+                cand1
+            } else if cand2.exists() {
+                cand2
+            } else if let Some(p) = fallback_pngs.get(idx).or_else(|| fallback_pngs.first()) {
+                p.clone()
+            } else {
+                return Err(err(
+                    404,
+                    format!("no mock PNG files found in '{}'", mock_dir.display()),
+                ));
+            };
+            let bytes = read_verified_png_file(&src)?;
+            let fname = format!("yt_{vid}_{ts_int}s.png");
+            let notes = format!("YouTube keyframe at {ts_int}s from {watch_url}");
+            let entry = upsert_teardown_png_bytes(
+                project_dir,
+                &mut doc,
+                &bytes,
+                &fname,
+                role,
+                "youtube",
+                Some(ts),
+                &notes,
+                json!([]),
+            )?;
+            captured_entries.push(entry);
+        }
+    } else {
+        let yt_dlp = find_yt_dlp_binary()
+            .ok_or_else(|| err(503, "yt-dlp not found on PATH; cannot extract YouTube frames"))?;
+        let ffmpeg = find_ffmpeg_binary()
+            .ok_or_else(|| err(503, "ffmpeg not found on PATH; cannot extract YouTube frames"))?;
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "openro-teardown-ytf-{}-{}",
+            std::process::id(),
+            TEARDOWN_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let _tmp_guard = TempDirGuard(tmp_dir.clone());
+
+        let vid_tmpl = tmp_dir.join(format!("{vid}.%(ext)s")).to_string_lossy().into_owned();
+        let dl_argv = vec![
+            "--no-playlist".to_string(),
+            "--no-warnings".to_string(),
+            "--max-filesize".to_string(),
+            "80M".to_string(),
+            "-f".to_string(),
+            "mp4/best[height<=720]".to_string(),
+            "-o".to_string(),
+            vid_tmpl,
+            "--".to_string(),
+            watch_url.clone(),
+        ];
+        let dl_run = run_argv_with_timeout(&yt_dlp, &dl_argv, YTDLP_TIMEOUT)
+            .map_err(|e| err(502, format!("yt-dlp failed: {e}")))?;
+        if dl_run.timed_out || dl_run.code != Some(0) {
+            return Err(err(502, "yt-dlp failed to download YouTube video for frame extraction"));
+        }
+        let video_path = std::fs::read_dir(&tmp_dir)
+            .ok()
+            .and_then(|rd| {
+                rd.flatten().map(|e| e.path()).find(|p| {
+                    p.is_file()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with(&vid) && !n.ends_with(".png"))
+                })
+            })
+            .ok_or_else(|| err(502, "downloaded video file missing after yt-dlp"))?;
+
+        for (idx, &ts) in timestamps.iter().enumerate() {
+            let role = roles
+                .get(idx)
+                .map(String::as_str)
+                .unwrap_or("youtube_frame");
+            let ts_int = ts.round() as u64;
+            let frame_out = tmp_dir.join(format!("yt_{vid}_{idx}_{ts_int}.png"));
+            let ff_argv = vec![
+                "-nostdin".to_string(),
+                "-hide_banner".to_string(),
+                "-loglevel".to_string(),
+                "error".to_string(),
+                "-y".to_string(),
+                "-ss".to_string(),
+                format!("{ts:.3}"),
+                "-i".to_string(),
+                video_path.to_string_lossy().into_owned(),
+                "-frames:v".to_string(),
+                "1".to_string(),
+                "-vf".to_string(),
+                "scale=1280:-1".to_string(),
+                frame_out.to_string_lossy().into_owned(),
+            ];
+            let ff_run = run_argv_with_timeout(&ffmpeg, &ff_argv, YTDLP_TIMEOUT)
+                .map_err(|e| err(502, format!("ffmpeg failed: {e}")))?;
+            if ff_run.timed_out || ff_run.code != Some(0) {
+                continue;
+            }
+            if let Ok(bytes) = read_verified_png_file(&frame_out) {
+                let fname = format!("yt_{vid}_{ts_int}s.png");
+                let notes = format!("YouTube keyframe at {ts_int}s from {watch_url}");
+                let entry = upsert_teardown_png_bytes(
+                    project_dir,
+                    &mut doc,
+                    &bytes,
+                    &fname,
+                    role,
+                    "youtube",
+                    Some(ts),
+                    &notes,
+                    json!([]),
+                )?;
+                captured_entries.push(entry);
+            }
+        }
+    }
+
+    if captured_entries.is_empty() {
+        return Err(err(502, "no YouTube keyframes could be extracted"));
+    }
+    save_teardown_files(project_dir, &mut doc, true)?;
+
+    Ok(json!({
+        "ok": true,
+        "universe_id": doc["universe_id"],
+        "video_id": vid,
+        "video_url": watch_url,
+        "captured_count": captured_entries.len(),
+        "screenshots": captured_entries,
+        "recommended_ui_reference_screenshots": doc["recommended_ui_reference_screenshots"],
+        "teardown_json_path": doc["teardown_json_path"],
+        "teardown_md_path": doc["teardown_md_path"],
+    }))
+}
