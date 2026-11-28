@@ -1651,3 +1651,77 @@ export async function fetchLuauDefinition(
   const qs = buildLiveOpsQuery({ path, line, col });
   return call<LuauDefinitionResult>(projUrl(projectId, `/luau/definition${qs}`));
 }
+
+export type TeardownScreenshot = {
+  path: string;
+  role?: string;
+  source?: string;
+  timestamp_s?: number | null;
+  notes?: string;
+  copy_observed?: string[];
+};
+
+export type TeardownBadge = {
+  id?: number | string;
+  name?: string;
+  description?: string;
+};
+
+export type TeardownGamePass = {
+  id?: number | string;
+  name?: string;
+  displayName?: string;
+  price?: number | null;
+  priceInRobux?: number | null;
+  description?: string;
+};
+
+export type TeardownReport = {
+  ok?: boolean;
+  universe_id?: number;
+  teardown_dir?: string;
+  teardown_md?: string;
+  game?: {
+    name?: string;
+    universe_id?: number;
+    place_id?: number;
+    creator?: string;
+    ccu?: number;
+    visits?: number;
+    like_ratio?: number;
+    niche_name?: string;
+    note?: string;
+  };
+  badges?: TeardownBadge[];
+  game_passes?: TeardownGamePass[];
+  media?: unknown[];
+  youtube_research?: {
+    videos?: Array<{ title?: string; url?: string; channel?: string; duration_s?: number; captions_snippet?: string }>;
+    findings?: string[];
+    summary?: string;
+  };
+  wiki_research?: {
+    pages?: Array<{ title?: string; url?: string; snippet?: string }>;
+    findings?: string[];
+    summary?: string;
+  };
+  screenshots?: TeardownScreenshot[];
+  recommended_ui_reference_screenshots?: string[];
+  e2e_spec?: Record<string, unknown>;
+};
+
+export function teardownScreenshotPreviewUrl(projectId: string, relPath: string): string {
+  if (/^(https?:|data:|blob:)/i.test(relPath)) return relPath;
+  return projUrl(projectId, `/preview?path=${enc(relPath)}`);
+}
+
+export async function fetchProjectTeardown(projectId: string): Promise<Res<TeardownReport>> {
+  return call<TeardownReport>(projUrl(projectId, "/teardown"));
+}
+
+export async function runProjectTeardown(
+  projectId: string,
+  payload: { target: string; include_youtube?: boolean; include_wiki?: boolean; capture_frames?: boolean },
+): Promise<Res<TeardownReport>> {
+  return call<TeardownReport>(projUrl(projectId, "/teardown"), payload, { timeoutMs: 90000 });
+}
