@@ -1461,7 +1461,7 @@ try {
   const sfxPanelText = await toolLibDlg.locator("[data-sfx-packs-panel]").innerText();
   // Live v1.34+ servers ship 9 packs incl. 3 modern UI packs; a pre-v1.34 live server still ships the 7 game packs.
   const modernOk = modernPackCount === 3
-    ? sfxPanelText.includes("Motion Graphics Swishes") && sfxPanelText.includes("Modern Interface Starter Pack") && sfxPanelText.includes("UI Pack Vol. 1")
+    ? sfxPanelText.includes("Motion Graphics Swishes") && sfxPanelText.includes("Modern UI Interface Starter Pack") && sfxPanelText.includes("UI Sound Effects Pack Vol. 1")
     : sfxLive && modernPackCount === 0;
   check(
     "Tool Library Audio & Music tab lists the SFX pack catalog (9 with modern UI & motion-graphics packs) & Optional Custom SFX Generators card",
