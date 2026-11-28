@@ -1721,6 +1721,19 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
             crate::playtest::verify_studio_audio(&srv, &r, args).map_err(|(_, e)| e)
         }));
     }
+    if agent.hooks.studio_verify_ui_craft.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_verify_ui_craft = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "studio_verify_ui_craft")?;
+            let r = srv
+                .projects
+                .lock()
+                .unwrap()
+                .find(&pid)
+                .ok_or_else(|| format!("no project '{pid}'"))?;
+            crate::playtest::verify_studio_ui_craft(&srv, &r, args).map_err(|(_, e)| e)
+        }));
+    }
     if agent.hooks.assets_moderation_poll.is_none() {
         let srv = Arc::clone(shared);
         agent.hooks.assets_moderation_poll = Some(Arc::new(move |args| {
@@ -6832,7 +6845,7 @@ fn try_route_project_studio(
     }
     let id = segs[0];
     let action = segs[2];
-    if !matches!(action, "stage-content" | "verify-device" | "verify-audio") {
+    if !matches!(action, "stage-content" | "verify-device" | "verify-audio" | "verify-ui-craft") {
         return false;
     }
     if req.method != "POST" {
@@ -6898,6 +6911,10 @@ fn try_route_project_studio(
             Err((code, msg)) => respond_err(stream, status_line_for_code(code), &msg),
         },
         "verify-audio" => match crate::playtest::verify_studio_audio(shared, &proj_ref, &body) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err((code, msg)) => respond_err(stream, status_line_for_code(code), &msg),
+        },
+        "verify-ui-craft" => match crate::playtest::verify_studio_ui_craft(shared, &proj_ref, &body) {
             Ok(v) => respond_json(stream, "200 OK", &v),
             Err((code, msg)) => respond_err(stream, status_line_for_code(code), &msg),
         },

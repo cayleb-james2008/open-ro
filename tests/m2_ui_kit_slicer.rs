@@ -1,5 +1,5 @@
 //! M2 PR C (Gap #80): UI Asset-Sheet Generator, Auto-Slicer / Alpha-Matting / 9-Slice Pipeline,
-//! 7 AAA UI Craft Rules, 4 Mixable Layout Topologies, 5 Visual Skins, and External UI-Gen Adapter Presets.
+//! 9 AAA UI Craft Rules, 4 Mixable Layout Topologies, 5 Visual Skins, and External UI-Gen Adapter Presets.
 
 use openro_rs::agent::Agent;
 use openro_rs::gui_designer::{
@@ -169,7 +169,7 @@ fn check_stylua(dir: &Path, src: &str) {
 #[test]
 fn ui_craft_rules_skins_topologies_and_originality_prompts() {
     let rules = ui_craft_rules();
-    assert_eq!(rules.len(), 7, "must encode all 7 AAA UI craft rules");
+    assert_eq!(rules.len(), 9, "must encode all 9 AAA UI craft rules");
 
     let layouts = layout_topologies();
     let layout_ids: Vec<&str> = layouts.iter().map(|l| l.id).collect();
@@ -503,11 +503,11 @@ fn external_ui_gen_adapters_and_http_routes() {
     let (st_presets, presets) = http_req(port, "GET", "/api/ui-kit/presets", None);
     assert_eq!(st_presets, 200, "presets failed: {presets}");
     assert_eq!(presets["ok"], true);
-    assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 7);
+    assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 9);
     assert_eq!(presets["layouts"].as_array().unwrap().len(), 4);
     assert_eq!(presets["skins"].as_array().unwrap().len(), 5);
     let sheets = presets["sheets"].as_array().unwrap();
-    assert_eq!(sheets.len(), 4);
+    assert_eq!(sheets.len(), 5);
     let preset_sheet_ids: Vec<&str> = sheets
         .iter()
         .filter_map(|s| s["id"].as_str())

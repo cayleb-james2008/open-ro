@@ -291,11 +291,11 @@ fn card_borders_sheet_generates_7_sleek_edge_hugging_borders_and_packs_cleanly()
 
     // 1. Recipe & prompt checks across all 5 visual skins
     let recipes = sheet_recipes();
-    assert_eq!(recipes.len(), 4, "expected 4 recipes including card_borders_sheet");
+    assert_eq!(recipes.len(), 5, "expected 5 recipes including card_borders_sheet + panels_sheet");
     let borders = recipes.iter().find(|r| r.id == "card_borders_sheet").expect("card_borders_sheet");
     assert_eq!(borders.items.len(), 7);
     let presets = presets_json();
-    assert_eq!(presets["sheets"].as_array().unwrap().len(), 4);
+    assert_eq!(presets["sheets"].as_array().unwrap().len(), 5);
 
     for skin in visual_skins() {
         let prompt = build_ui_sheet_prompt(skin.id, "card_borders_sheet").unwrap();

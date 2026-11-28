@@ -1,8 +1,8 @@
-//! OpenRO UI Kit Pipeline (Gap #80):
-//! - 7 Dissected AAA UI Craft Rules
+//! OpenRO UI Kit Pipeline (Gap #80, Gap #91):
+//! - 9 Dissected AAA UI Craft Rules (incl. #8 image-gen panel coverage, #9 dense master-detail taste)
 //! - 4 Mixable Layout Topologies (`skybridge-crest`, `perimeter-command`, `workshop-ribbon`, `compact-mobile-split`)
 //! - 5 Original Visual Skins (`obsidian-prism`, `skybridge-gilded`, `sakura-lacquer`, `cyber-forge`, `clean-monochrome`)
-//! - 4 Cohesive UI Asset Sheet Recipes (`chrome_sheet`, `icons_sheet`, `rarity_frames_sheet`, `card_borders_sheet`)
+//! - 5 Cohesive UI Asset Sheet Recipes (`chrome_sheet`, `icons_sheet`, `rarity_frames_sheet`, `card_borders_sheet`, `panels_sheet`)
 //! - Single-line `character_art = false` ChatGPT Image Gen prompts + deterministic 2x Pillow `procedural_fallback`
 //! - Auto-slicer integration (`image_ops::slice_ui_sheet`) -> `art/ui/<skin>/*.png` + `art/ui/slices.json`
 
@@ -158,6 +158,22 @@ pub fn ui_craft_rules() -> Vec<UiCraftRule> {
             rule: "Anchor navigation, currency, and action docks to perimeter safe corridors clearing the 58px TopBar and 170px mobile thumbstick/jump corners on 1920x1080, 1024x768, and 844x390.",
             roblox_binding: "ui_kit_screen_doc(layout, skin) verified 0 warnings across all 3 viewports",
             anti_pattern: "Copying reference HUD coordinates verbatim or blocking the 844x390 thumbstick zone.",
+        },
+        UiCraftRule {
+            id: "image-gen-panel-coverage",
+            number: 8,
+            title: "Image-Gen-First Panel Coverage (>=70% Sliced Chrome)",
+            rule: "Generate chrome_sheet + panels_sheet via ChatGPT Image Gen first, then bind sliced transparent PNGs to >=70% of live rendered modals, headers, tabs, buttons, progress bars, and dock tiles (ScaleType.Slice or Stretch) while every slice-backed parent container keeps BackgroundTransparency = 1 so the art, not a flat fill, defines the silhouette.",
+            roblox_binding: "SliceChrome / PanelChrome / TitleRibbon ImageLabel (ScaleType = Enum.ScaleType.Slice, SliceCenter = AssetIds.slices[key].slice) inside a parent GuiObject with BackgroundTransparency = 1; verified by studio_verify_ui_craft (panel_coverage_pct >= 65, opaque_parent_violations == 0)",
+            anti_pattern: "Opaque flat Frame fills painted behind sliced art, or primary buttons/tabs left as bare TextButtons with no image chrome.",
+        },
+        UiCraftRule {
+            id: "dense-master-detail-taste",
+            number: 9,
+            title: "Dense Master-Detail + Multi-Column Tile Grids",
+            rule: "Lay out inventory, shop, codex, and team modals as dense split-pane Master-Detail (scrolling tile grid left, inspector_card detail right) or multi-column UIGridLayout tile grids with tab_active/tab_inactive filter strips, filling the modal with purposeful content.",
+            roblox_binding: "Modal = modal_glass ImageLabel + title_ribbon header + UIGridLayout (CellSize ~ 96-128px, 3-6 columns) master pane + inspector_card detail pane + btn_emerald/btn_gold CTA row",
+            anti_pattern: "Dead single-card voids floating in an empty modal, or bare outline-only stacks of thin bordered boxes.",
         },
     ]
 }
@@ -584,6 +600,86 @@ pub fn sheet_recipes() -> Vec<UiSheetRecipe> {
                 },
             ],
         },
+        UiSheetRecipe {
+            id: "panels_sheet",
+            name: "Image-Gen Panels Sheet (Modal Glass, Title Ribbon, Tabs, CTA Buttons, Dock Tile, Inspector Card)",
+            cols: 4,
+            rows: 2,
+            items: vec![
+                SheetItemSpec {
+                    name: "modal_glass",
+                    row: 0,
+                    col: 0,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [512, 320],
+                    prompt_desc: "sleek jet-black obsidian translucent modal panel with thin vibrant neon-gradient outer rim glow and crisp minimal bevels",
+                },
+                SheetItemSpec {
+                    name: "title_ribbon",
+                    row: 0,
+                    col: 1,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [512, 128],
+                    prompt_desc: "dramatic breaking-out diagonal angular slash-crest header banner with a radiant geometric flare accent on the left, fully original geometry with zero trademarked emblems",
+                },
+                SheetItemSpec {
+                    name: "tab_active",
+                    row: 0,
+                    col: 2,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [256, 96],
+                    prompt_desc: "brushed metallic gold accent segmented filter tab plate with beveled sheen",
+                },
+                SheetItemSpec {
+                    name: "tab_inactive",
+                    row: 0,
+                    col: 3,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [256, 96],
+                    prompt_desc: "brushed dark titanium steel segmented filter tab plate",
+                },
+                SheetItemSpec {
+                    name: "btn_emerald",
+                    row: 1,
+                    col: 0,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [320, 112],
+                    prompt_desc: "glossy emerald-green beveled primary call-to-action button with top specular sheen",
+                },
+                SheetItemSpec {
+                    name: "btn_gold",
+                    row: 1,
+                    col: 1,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [320, 112],
+                    prompt_desc: "glossy amber-gold metallic call-to-action button with top specular sheen",
+                },
+                SheetItemSpec {
+                    name: "dock_tile",
+                    row: 1,
+                    col: 2,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [160, 160],
+                    prompt_desc: "glossy dark obsidian square hotkey dock tile with diagonal glass reflection and crisp rim",
+                },
+                SheetItemSpec {
+                    name: "inspector_card",
+                    row: 1,
+                    col: 3,
+                    is_9slice: true,
+                    cutout_interior: false,
+                    target_size: [440, 320],
+                    prompt_desc: "sleek dark translucent detail inspector sub-panel frame with glowing accent edge",
+                },
+            ],
+        },
     ]
 }
 
@@ -760,7 +856,7 @@ pub fn presets_json() -> Value {
 }
 
 pub fn prompt_guidance() -> &'static str {
-    "UI Craft (7 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (including card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, original crests, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* 9-slices + Anime Nexus RNG X perimeter icon docks + bottom roll/team hotbar (NEVER crude SaaS bordered boxes)."
+    "UI Craft (9 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (including card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, original crests, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* 9-slices + Anime Nexus RNG X perimeter icon docks + bottom roll/team hotbar (NEVER crude SaaS bordered boxes). Image-Gen-First: generate chrome_sheet, panels_sheet (modal_glass, title_ribbon, tab_active, tab_inactive, btn_emerald, btn_gold, dock_tile, inspector_card), icons_sheet, and card_borders_sheet via ui_kit_generate {\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}; bind >=70% of modals/headers/tabs/buttons/progress bars/dock tiles to sliced PNGs (ScaleType.Slice/Stretch + SliceCenter) and set BackgroundTransparency = 1 on every slice-backed container; build dense split-pane Master-Detail or multi-column UIGridLayout tile grids (zero dead single-card voids, zero bare outline stacks); then verify live with studio_verify_ui_craft (ui_images_bound >= 6, slice_chrome_active >= 4, opaque_parent_violations == 0, panel_coverage_pct >= 65)."
 }
 
 /// Generate (or slice an existing) UI Kit asset sheet + build the matching mixable ScreenDoc.
@@ -1067,7 +1163,7 @@ fn generate_rust_fallback_kit(
         };
         let abs = safe_rel(root, &rel)?;
         if let Some(p) = abs.parent() {
-            std::fs::create_dir_all(p).or_else(|e| Err(Oc { status: 500, msg: format!("mkdir: {e}") }))?;
+            std::fs::create_dir_all(p).map_err(|e| Oc { status: 500, msg: format!("mkdir: {e}") })?;
         }
         std::fs::write(&abs, &png_bytes).map_err(|e| Oc { status: 500, msg: format!("write {rel}: {e}") })?;
         let slice = if item.is_9slice {

@@ -213,6 +213,7 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"studio_stage_content\", \"args\": {{\"slug\": \"...?\"}}}} stages local project PNG/audio into Studio's local content dir (`rbxasset://openro/<slug>/...`) for instant preview before Open Cloud moderation\n\
 - {{\"tool\": \"studio_verify_device\", \"args\": {{\"profile\": \"desktop_1920x1080|tablet_1024x768|phone_844x390\", \"capture_screenshot\": true}}}} runs live Studio PlayerGui layout/touch-target/overflow/overlap verification (fails closed when Studio is disconnected)\n\
 - {{\"tool\": \"studio_verify_audio\", \"args\": {{}}}} runs offline RIFF/WAVE PCM checks plus live Studio `ContentProvider:PreloadAsync` & `Sound.IsLoaded` verification (fails closed when Studio is disconnected)\n\
+- {{\"tool\": \"studio_verify_ui_craft\", \"args\": {{\"offline\": false}}}} verifies the 9 UI Craft Rules live: Client PlayerGui probe counting ui_images_bound, slice_chrome_active (ScaleType.Slice), opaque_parent_violations (SliceChrome/PanelChrome/RarityBorder/TitleRibbon under parents with BackgroundTransparency < 0.85), image_backed_buttons vs bare_buttons, and panel_coverage_pct (passes at >=6 images, >=4 slice chrome, 0 violations, >=65% coverage); with Studio disconnected it runs an offline static audit of art/ui/slices.json + src/**/*.luau flagged mode offline_fallback (passed=false) and writes ops/ui/studio-ui-craft-verify.json\n\
 \nStudio-Native First WORKFLOW:\n\
 - Push native Luau scripts, ScreenGuis, and instances directly into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
 - Use `studio_cua_*` (`studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`) over the headed/embedded Studio window for any native Studio UI or dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs).\n\
@@ -246,8 +247,8 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"art_generate\", \"args\": {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [\"art/references/...\"]}}}} generates art (ChatGPT shared browser default; never Higgsfield)\n\
 - {{\"tool\": \"image_process\", \"args\": {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}}}} crops/resizes/composites/removes background on PNGs\n\
 - {{\"tool\": \"art_pack_card\", \"args\": {{\"card_id\": \"...\"}}}} packs card art/icon/full variants + contact sheet\n\
-- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 7 UI Craft rules, 4 mixable layouts, 5 visual skins, and 3 UI sheet recipes\n\
-- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|icons_sheet|rarity_frames_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
+- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 9 UI Craft rules, 4 mixable layouts, 5 visual skins, and 5 UI sheet recipes\n\
+- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|panels_sheet|icons_sheet|rarity_frames_sheet|card_borders_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
 - {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
 - {{\"tool\": \"sfx_pack_list\", \"args\": {{}}}} / {{\"tool\": \"sfx_pack_install\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\"}}}} / {{\"tool\": \"sfx_pack_search\", \"args\": {{\"query\": \"click\", \"pack_id\": \"...?\", \"limit\": 20}}}} / {{\"tool\": \"sfx_pack_use\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\", \"clip\": \"...\", \"out_name\": \"ui_click\"}}}} browses, installs, searches, and masters free SFX clips (trending Modern UI / motion-graphics packs first) into 44.1kHz WAV in assets/audio/\n\
@@ -310,15 +311,13 @@ Studio-Native First & LIVE CUA TOOLS:\n\
 - Push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
 - Use `studio_cua_*` over the headed Studio window for native Studio UI/dialogs outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor).\n\
 - Use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for assets Studio cannot do natively.\n\
-- studio_cua_screenshot {{\"label\":\"viewport\"}} / studio_cua_mouse {{\"action\":\"click|drag|scroll\",\"x\":0.5,\"y\":0.5,\"normalized\":true}} / studio_cua_keyboard {{\"hotkey\":[\"ctrl\",\"s\"]}} / studio_cua_window {{\"action\":\"status|launch|attach|transfer|stop|pause|resume\",\"place_file\":\"...?\"}} / studio_stage_content {{}} / studio_verify_device {{\"profile\":\"phone_844x390|tablet_1024x768|desktop_1920x1080\"}} / studio_verify_audio {{}}\n\n\
+- Studio-Native & CUA: studio_cua_screenshot/studio_cua_mouse/studio_cua_keyboard/studio_cua_window, studio_stage_content, studio_verify_device {{profile}}, studio_verify_audio, studio_verify_ui_craft {{offline:false}}\n\
+\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
-- research_roblox_game {{\"target\":\"<URL|ID>\"}} / web_search {{\"query\":\"...\",\"limit\":5}} / web_fetch {{\"url\":\"https://...\"}} / reference_search {{\"query\":\"...\",\"character\":\"...\",\"show\":\"...\"}}\n\
-- art_generate {{\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[...]}} (ChatGPT default; never Higgsfield)\n\
-- image_process {{\"input\":\"...\",\"output\":\"...\",\"ops\":[...]}} / art_pack_card {{\"card_id\":\"...\"}}\n\
-- ui_kit_presets {{}} / ui_kit_generate {{\"layout\":\"skybridge-crest\",\"skin\":\"obsidian-prism\",\"sheet\":\"chrome_sheet\"}} (9-slice PNGs + BlurEffect + >=5.25:1 + 844x390 safe)\n\
-- mesh_generate {{\"name\":\"Prop\",\"description\":\"...\",\"script\":\"...\"}} / audio_generate {{\"name\":\"Sfx\",\"preset\":\"...\",\"recipe\":{{...}},\"duration_ms\":1200}}\n\
-- sfx_pack_list {{}} / sfx_pack_install {{\"pack_id\":\"kenney-ui-sfx\"}} / sfx_pack_search {{\"query\":\"click\",\"limit\":20}} / sfx_pack_use {{\"pack_id\":\"...\",\"clip\":\"...\",\"out_name\":\"...\"}} (free CC0-1.0 SFX packs -> 44.1kHz WAV)\n\
-- music_search {{\"genre\":\"lofi\"}} / music_import {{\"url\":\"...\"}} (copyright-free BGM)\n\
+- research_roblox_game {{target}} / web_search {{query,limit}} / web_fetch {{url}} / reference_search {{query,character,show}}\n\
+- art_generate {{prompt,out_path,references}} (ChatGPT default; never Higgsfield) / image_process {{input,output,ops}} / art_pack_card {{card_id}}\n\
+- ui_kit_presets {{}} / ui_kit_generate {{layout:\"skybridge-crest\",skin:\"obsidian-prism\",sheet:\"chrome_sheet|panels_sheet\"}} (UI Craft (9 Rules): generate chrome_sheet+panels_sheet [modal_glass,title_ribbon,tab_active,tab_inactive,btn_emerald,btn_gold,dock_tile,inspector_card]+icons_sheet+card_borders_sheet; bind >=70% sliced PNGs w/ BackgroundTransparency=1 & dense grids; verify via studio_verify_ui_craft)\n\
+- mesh_generate {{name,description,script}} / audio_generate {{name,preset,recipe,duration_ms}} / sfx_pack_list|install|search|use / music_search|import (copyright-free BGM)\n\
 - adapter_list {{\"capability\":\"...?\"}} / adapter_invoke {{\"capability\":\"...\",\"adapter_id\":\"...?\",\"params\":{{...}}}}\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\":true,\"save_creator\":true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
 - assets_authorise {{\"paths\":[...]}} / assets_upload {{\"paths\":[...],\"max_audio_uploads\":5}} / assets_moderation_poll {{}} / assets_codegen {{\"studio_local_fallback\":true}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
@@ -577,6 +576,7 @@ pub struct AgentHooks {
     pub studio_stage_content: Option<HookFn>,
     pub studio_verify_device: Option<HookFn>,
     pub studio_verify_audio: Option<HookFn>,
+    pub studio_verify_ui_craft: Option<HookFn>,
     pub assets_moderation_poll: Option<HookFn>,
 }
 
@@ -4952,6 +4952,28 @@ impl Agent {
                 let text = res.to_string();
                 transcript.push(format!("tool studio_verify_audio -> {text}"));
                 Ok(format!("tool_result: studio_verify_audio: {text}"))
+            }
+            "studio_verify_ui_craft" => {
+                let res = if let Some(hook) = &self.hooks.studio_verify_ui_craft {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    let id = root
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(crate::projects::slug)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "project".to_string());
+                    let r = crate::projects::ProjectRef { id, dir: root };
+                    crate::playtest::verify_ui_craft_offline(
+                        &r,
+                        "Roblox Studio MCP is not connected; ran the offline static audit instead of live PlayerGui verification.",
+                    )
+                    .map_err(|(_, e)| e)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool studio_verify_ui_craft -> {text}"));
+                Ok(format!("tool_result: studio_verify_ui_craft: {text}"))
             }
             "assets_moderation_poll" => {
                 let res = if let Some(hook) = &self.hooks.assets_moderation_poll {

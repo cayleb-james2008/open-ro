@@ -587,6 +587,106 @@ def do_render_ui_sheet(req):
             pad_in = 84
             d.rounded_rectangle((fx0 + pad_in, fy0 + pad_in, fx1 - pad_in, fy1 - pad_in), radius=26, fill=chroma, outline=hi, width=8)
         out_img = canvas.resize((w, h), Image.Resampling.LANCZOS)
+    elif sheet == "panels_sheet":
+        # Gap #91: Image-Gen-First panels sheet fallback (4x2, 8 crisp 9-slice plates).
+        w, h = 2048, 1024
+        cols, rows = 4, 2
+        cw, ch = (w * ss) // cols, (h * ss) // rows
+        canvas = Image.new("RGBA", (w * ss, h * ss), chroma)
+        d = ImageDraw.Draw(canvas)
+        white = (255, 255, 255, 255)
+        obsidian = (10, 13, 20, 255)
+        obsidian_hi = (28, 35, 52, 255)
+        emerald_hi, emerald_lo = (52, 211, 153, 255), (4, 120, 87, 255)
+        gold_hi, gold_lo = (252, 211, 77, 255), (161, 98, 7, 255)
+        titan_hi, titan_lo = (100, 116, 139, 255), (30, 41, 59, 255)
+
+        def cell_box(col, row, bw, bh):
+            mx, my = col * cw + cw // 2, row * ch + ch // 2
+            return (mx - bw // 2, my - bh // 2, mx + bw // 2, my + bh // 2)
+
+        def glossy_plate(box, radius, top, bot, rim_col, rim_w, sheen=True):
+            # Rounded-mask vertical gradient so no square fill corners leak past the bevel.
+            x0, y0, x1, y1 = box
+            bw, bh = x1 - x0, y1 - y0
+            grad = Image.new("RGBA", (bw, bh))
+            gd = ImageDraw.Draw(grad)
+            for yy in range(bh):
+                gd.line([(0, yy), (bw, yy)], fill=lerp_col(top, bot, yy / max(1, bh - 1)))
+            mask = Image.new("L", (bw, bh), 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, bw - 1, bh - 1), radius=radius, fill=255)
+            canvas.paste(grad, (x0, y0), mask)
+            d.rounded_rectangle(box, radius=radius, outline=stroke, width=rim_w + 2)
+            ins = rim_w + 2
+            d.rounded_rectangle((x0 + ins, y0 + ins, x1 - ins, y1 - ins), radius=max(4, radius - ins), outline=rim_col, width=rim_w)
+            if sheen:
+                d.rounded_rectangle(
+                    (x0 + radius // 2 + 16, y0 + ins + rim_w + 10, x1 - radius // 2 - 16, y0 + ins + rim_w + 10 + max(10, bh // 4)),
+                    radius=max(6, bh // 8),
+                    fill=lerp_col(top, white, 0.38),
+                )
+
+        def brushed_lines(box, top, bot):
+            x0, y0, x1, y1 = box
+            for k in range(1, 7):
+                yy = y0 + (y1 - y0) * (k + 2) // 10
+                d.line([(x0 + 48, yy), (x1 - 48, yy)], fill=lerp_col(top, bot, 0.18 + 0.08 * (k % 2)), width=2)
+
+        # (0,0) modal_glass: jet-black obsidian glass + thin neon-gradient outer rim glow
+        box = cell_box(0, 0, 880, 550)
+        glossy_plate(box, 44, obsidian_hi, obsidian, accent, 5, sheen=False)
+        x0, y0, x1, y1 = box
+        d.rounded_rectangle((x0 + 4, y0 + 4, x1 - 4, y1 - 4), radius=40, outline=lerp_col(accent, crest_trim, 0.5), width=3)
+        d.rounded_rectangle((x0 + 18, y0 + 18, x1 - 18, y1 - 18), radius=30, outline=lerp_col(crest_trim, obsidian, 0.55), width=2)
+        d.line([(x0 + 80, y0 + 38), (x1 - 80, y0 + 38)], fill=lerp_col(obsidian_hi, white, 0.35), width=3)
+
+        # (1,0) title_ribbon: breaking-out diagonal slash-crest banner + radiant geometric flare (original)
+        cx = cw
+        mx, my = cx + cw // 2, ch // 2
+        bx0, bx1 = cx + 60, cx + cw - 60
+        ribbon = [(bx0 + 80, my - 115), (bx1, my - 115), (bx1 - 80, my + 115), (bx0, my + 115)]
+        d.polygon(ribbon, fill=crest_fill, outline=stroke)
+        inner = [(bx0 + 108, my - 90), (bx1 - 30, my - 90), (bx1 - 102, my + 90), (bx0 + 36, my + 90)]
+        d.polygon(inner, fill=lerp_col(crest_fill, accent, 0.4), outline=crest_trim)
+        d.line(ribbon + [ribbon[0]], fill=crest_trim, width=8)
+        d.polygon([(bx0 + 150, my - 78), (bx1 - 40, my - 78), (bx1 - 52, my - 50), (bx0 + 138, my - 50)], fill=lerp_col(crest_fill, white, 0.3))
+        fx, fy = bx0 + 128, my
+        for k in range(3):
+            off = 26 + k * 34
+            d.polygon([(fx - off - 22, fy - 86 + k * 8), (fx - off + 18, fy), (fx - off - 22, fy + 86 - k * 8), (fx - off - 4, fy)], fill=lerp_col(crest_trim, accent, k / 2.0), outline=stroke)
+        diamond = [(fx, fy - 70), (fx + 46, fy), (fx, fy + 70), (fx - 46, fy)]
+        d.polygon(diamond, fill=accent, outline=stroke)
+        d.line(diamond + [diamond[0]], fill=crest_trim, width=5)
+
+        # (2,0) tab_active: brushed metallic gold segmented filter tab plate
+        box = cell_box(2, 0, 840, 315)
+        glossy_plate(box, 30, gold_hi, gold_lo, (254, 243, 199, 255), 6)
+        brushed_lines(box, gold_hi, gold_lo)
+
+        # (3,0) tab_inactive: brushed dark titanium/steel tab plate
+        box = cell_box(3, 0, 840, 315)
+        glossy_plate(box, 30, titan_hi, titan_lo, (148, 163, 184, 255), 5, sheen=False)
+        brushed_lines(box, titan_hi, titan_lo)
+
+        # (0,1) btn_emerald / (1,1) btn_gold: glossy CTA buttons with top specular sheen
+        glossy_plate(cell_box(0, 1, 860, 300), 44, emerald_hi, emerald_lo, (167, 243, 208, 255), 6)
+        glossy_plate(cell_box(1, 1, 860, 300), 44, gold_hi, gold_lo, (254, 243, 199, 255), 6)
+
+        # (2,1) dock_tile: glossy obsidian square hotkey tile + diagonal glass reflection
+        box = cell_box(2, 1, 700, 700)
+        glossy_plate(box, 64, obsidian_hi, obsidian, rim, 7, sheen=False)
+        x0, y0, x1, y1 = box
+        d.polygon([(x0 + 40, y0 + 40), (x0 + 360, y0 + 40), (x0 + 40, y0 + 360)], fill=lerp_col(obsidian_hi, white, 0.16))
+        d.rounded_rectangle((x0 + 22, y0 + 22, x1 - 22, y1 - 22), radius=48, outline=lerp_col(crest_trim, obsidian, 0.3), width=3)
+
+        # (3,1) inspector_card: dark translucent detail sub-panel with glowing accent edge
+        box = cell_box(3, 1, 840, 610)
+        glossy_plate(box, 32, elevated, surface, accent, 5, sheen=False)
+        x0, y0, x1, y1 = box
+        d.line([(x0 + 28, y0 + 64), (x0 + 28, y1 - 64)], fill=crest_trim, width=10)
+        d.rounded_rectangle((x0 + 18, y0 + 18, x1 - 18, y1 - 18), radius=20, outline=lerp_col(accent, surface, 0.5), width=2)
+
+        out_img = canvas.resize((w, h), Image.Resampling.LANCZOS)
     else:
         fail(f"Unknown UI sheet recipe '{sheet}'.")
 
