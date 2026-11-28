@@ -631,7 +631,7 @@ pub fn sheet_recipes() -> Vec<UiSheetRecipe> {
                     is_9slice: true,
                     cutout_interior: false,
                     target_size: [256, 96],
-                    prompt_desc: "brushed metallic gold accent segmented filter tab plate with beveled sheen",
+                    prompt_desc: "single brushed metallic gold beveled filter tab plate with specular sheen",
                 },
                 SheetItemSpec {
                     name: "tab_inactive",
@@ -640,7 +640,7 @@ pub fn sheet_recipes() -> Vec<UiSheetRecipe> {
                     is_9slice: true,
                     cutout_interior: false,
                     target_size: [256, 96],
-                    prompt_desc: "brushed dark titanium steel segmented filter tab plate",
+                    prompt_desc: "single brushed dark titanium steel beveled filter tab plate",
                 },
                 SheetItemSpec {
                     name: "btn_emerald",
