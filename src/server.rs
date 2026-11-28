@@ -1526,7 +1526,9 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
             if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "mesh_gen", explicit, args) {
                 return res;
             }
-            if args.get("parts").is_some() || args.get("script").is_some() {
+            if args.get("map_kit").and_then(Value::as_bool) == Some(true) {
+                crate::mesh::build_map_kit(data_dir, proj.as_deref(), args, None)
+            } else if args.get("parts").is_some() || args.get("script").is_some() {
                 crate::mesh::generate_for_project(&srv.assets_root, proj.as_deref(), args, None)
             } else {
                 crate::library::generate_blender_mesh(
@@ -1535,6 +1537,18 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
                     None,
                 )
             }
+        }));
+    }
+    if agent.hooks.blender_build_map.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.blender_build_map = Some(Arc::new(move |args| {
+            let proj = args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .and_then(|id| resolve_project_dir(&srv, id))
+                .or_else(|| srv.active_project_dir());
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            crate::mesh::build_map_kit(data_dir, proj.as_deref(), args, None)
         }));
     }
     if agent.hooks.audio_generate.is_none() {
@@ -2051,6 +2065,11 @@ fn handle(
 
     // Gap #84/#85 project-scoped Studio bridge & live verification routes.
     if try_route_project_studio(&mut stream, shared, &req, path) {
+        break 'req_done;
+    }
+
+    // Gap #92 project-scoped Blender 3D Map & Architecture Kit route.
+    if try_route_project_blender(&mut stream, shared, &req, path) {
         break 'req_done;
     }
 
@@ -6923,6 +6942,59 @@ fn try_route_project_studio(
     true
 }
 
+fn try_route_project_blender(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+) -> bool {
+    let Some(rest) = path.strip_prefix("/api/projects/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    if segs.len() != 3 || segs[1] != "blender" || segs[2] != "build-map" {
+        return false;
+    }
+    let id = segs[0];
+    if req.method != "POST" {
+        respond_err(stream, "405 Method Not Allowed", "use POST for this endpoint");
+        return true;
+    }
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "generating Blender 3D map kits is only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        }
+    };
+    let Some(proj_dir) = resolve_project_dir(shared, id) else {
+        respond_err(stream, "404 Not Found", &format!("unknown project '{id}'"));
+        return true;
+    };
+    let blender_override = body
+        .get("binary_path")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    match crate::mesh::build_map_kit(data_dir, Some(&proj_dir), &body, blender_override.as_deref()) {
+        Ok(v) => respond_json(stream, "200 OK", &v),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
+    }
+    true
+}
+
 fn perform_studio_embed_launch(
     shared: &Arc<Shared>,
     body: &Value,
@@ -8852,6 +8924,13 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
     let explicit = body.get("adapter_id").and_then(|v| v.as_str());
     let result = if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "mesh_gen", explicit, &body) {
         res
+    } else if body.get("map_kit").and_then(Value::as_bool) == Some(true) {
+        crate::mesh::build_map_kit(
+            data_dir,
+            project_root.as_deref(),
+            &body,
+            blender_override.as_deref(),
+        )
     } else if body.get("parts").is_some() || body.get("script").is_some() {
         crate::mesh::generate_for_project(
             &shared.assets_root,

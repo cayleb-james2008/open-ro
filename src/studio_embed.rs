@@ -4586,6 +4586,31 @@ pub fn collect_studio_content_files(project_dir: &Path) -> Vec<(String, PathBuf)
     collect_flat("assets/images/replacements", &["png"], &mut push_checked);
     // 6. assets/audio/*.{wav,ogg,mp3}
     collect_flat("assets/audio", &["wav", "ogg", "mp3"], &mut push_checked);
+    // 7. assets/meshes/*.{mesh,png,glb} (excluding preview renders; #92)
+    {
+        let meshes_dir = project_dir.join("assets/meshes");
+        if std::fs::symlink_metadata(&meshes_dir)
+            .ok()
+            .is_some_and(|m| !m.file_type().is_symlink() && m.is_dir())
+        {
+            if let Ok(rd) = std::fs::read_dir(&meshes_dir) {
+                for entry in rd.flatten() {
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_symlink() || !ft.is_file() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let lower = name.to_ascii_lowercase();
+                    if is_superseded_or_hidden_name(&name) || lower.contains("_preview") {
+                        continue;
+                    }
+                    if has_ext_ci(&name, &["mesh", "png", "glb"]) {
+                        push_checked(format!("assets/meshes/{name}"), entry.path());
+                    }
+                }
+            }
+        }
+    }
 
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out.dedup_by(|a, b| a.0 == b.0);

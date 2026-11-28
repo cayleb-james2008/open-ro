@@ -1724,18 +1724,24 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
                 continue;
             };
             path_to_uri.insert(rel.clone(), uri.clone());
-            // Locked mesh asset ids: assets/meshes/<stem>.<mesh_ext> -> AssetIds.meshes["<stem>"].assetId (#69).
+            // Locked mesh asset ids: assets/meshes/<stem>.<mesh_ext> -> AssetIds.meshes["<stem>"].assetId (#69, #92).
+            // Prefer native Roblox binary `.mesh` over `.obj` when both exist.
             if let Some(fname) = rel
                 .strip_prefix("assets/meshes/")
                 .filter(|f| !f.contains('/'))
             {
                 if let Some((stem, ext)) = fname.rsplit_once('.') {
+                    let ext_low = ext.to_ascii_lowercase();
                     if matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "obj" | "fbx" | "glb" | "gltf" | "rbxm" | "rbxmx"
+                        ext_low.as_str(),
+                        "mesh" | "obj" | "fbx" | "glb" | "gltf" | "rbxm" | "rbxmx"
                     ) && !stem.is_empty()
                     {
-                        mesh_asset_ids.entry(stem.to_string()).or_insert(uri);
+                        if ext_low == "mesh" {
+                            mesh_asset_ids.insert(stem.to_string(), uri);
+                        } else {
+                            mesh_asset_ids.entry(stem.to_string()).or_insert(uri);
+                        }
                     }
                 }
             }
@@ -1749,7 +1755,26 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
                 continue;
             }
             let uri = format!("rbxasset://openro/{studio_project_slug}/{rel}");
-            path_to_uri.insert(rel.clone(), uri);
+            path_to_uri.insert(rel.clone(), uri.clone());
+            if let Some(fname) = rel
+                .strip_prefix("assets/meshes/")
+                .filter(|f| !f.contains('/') && !f.contains("_preview"))
+            {
+                if let Some((stem, ext)) = fname.rsplit_once('.') {
+                    let ext_low = ext.to_ascii_lowercase();
+                    if matches!(
+                        ext_low.as_str(),
+                        "mesh" | "obj" | "fbx" | "glb" | "gltf" | "rbxm" | "rbxmx"
+                    ) && !stem.is_empty()
+                    {
+                        if ext_low == "mesh" {
+                            mesh_asset_ids.insert(stem.to_string(), uri);
+                        } else {
+                            mesh_asset_ids.entry(stem.to_string()).or_insert(uri);
+                        }
+                    }
+                }
+            }
             local_fallback_count += 1;
         }
     }
@@ -1848,16 +1873,33 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     by_path.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Optional mesh metadata from assets/meshes/manifest.json (stud bbox & tris for pre-upload proxies),
-    // enriched with locked assetId from assets/meshes/<stem>.obj (#69).
+    // enriched with locked assetId/meshId/textureId/glowMeshId/glowTextureId (#69, #92).
     struct MeshCodegenRow {
         meta: Option<([f64; 3], u64)>,
         asset_uri: Option<String>,
+        texture_uri: Option<String>,
+        glow_mesh_uri: Option<String>,
+        glow_texture_uri: Option<String>,
     }
     let mesh_manifest = std::fs::read_to_string(root.join("assets/meshes/manifest.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok());
     let mut mesh_rows: std::collections::BTreeMap<String, MeshCodegenRow> =
         std::collections::BTreeMap::new();
+    let resolve_mesh_textures = |stem: &str| {
+        let tex = path_to_uri
+            .get(&format!("assets/meshes/{stem}.png"))
+            .cloned();
+        let glow_mesh = mesh_asset_ids
+            .get(&format!("{stem}_glow"))
+            .cloned()
+            .or_else(|| path_to_uri.get(&format!("assets/meshes/{stem}_glow.mesh")).cloned())
+            .or_else(|| path_to_uri.get(&format!("assets/meshes/{stem}_glow.obj")).cloned());
+        let glow_tex = path_to_uri
+            .get(&format!("assets/meshes/{stem}_glow.png"))
+            .cloned();
+        (tex, glow_mesh, glow_tex)
+    };
     if let Some(entries) = mesh_manifest
         .as_ref()
         .and_then(|v| v.get("meshes").and_then(Value::as_object).or_else(|| v.as_object()))
@@ -1880,11 +1922,15 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
                         .or_else(|| v.get("triangles"))
                         .and_then(Value::as_u64)
                         .unwrap_or(0);
+                    let (tex, glow_mesh, glow_tex) = resolve_mesh_textures(k);
                     mesh_rows.insert(
                         k.clone(),
                         MeshCodegenRow {
                             meta: Some((sz, tris)),
                             asset_uri: mesh_asset_ids.get(k).cloned(),
+                            texture_uri: tex,
+                            glow_mesh_uri: glow_mesh,
+                            glow_texture_uri: glow_tex,
                         },
                     );
                 }
@@ -1892,17 +1938,59 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         }
     }
     for (stem, uri) in &mesh_asset_ids {
+        if stem.ends_with("_glow") && mesh_rows.contains_key(stem.trim_end_matches("_glow")) {
+            continue;
+        }
+        let (tex, glow_mesh, glow_tex) = resolve_mesh_textures(stem);
         mesh_rows
             .entry(stem.clone())
             .and_modify(|row| {
                 if row.asset_uri.is_none() {
                     row.asset_uri = Some(uri.clone());
                 }
+                if row.texture_uri.is_none() {
+                    row.texture_uri = tex.clone();
+                }
+                if row.glow_mesh_uri.is_none() {
+                    row.glow_mesh_uri = glow_mesh.clone();
+                }
+                if row.glow_texture_uri.is_none() {
+                    row.glow_texture_uri = glow_tex.clone();
+                }
             })
             .or_insert(MeshCodegenRow {
                 meta: None,
                 asset_uri: Some(uri.clone()),
+                texture_uri: tex,
+                glow_mesh_uri: glow_mesh,
+                glow_texture_uri: glow_tex,
             });
+    }
+    // Also expose standalone floor/architecture textures (e.g. arena_floor_arcane.png) under AssetIds.meshes
+    // when they have no corresponding 3D geometry file.
+    for (rel, uri) in &path_to_uri {
+        if let Some(fname) = rel
+            .strip_prefix("assets/meshes/")
+            .filter(|f| !f.contains('/') && !f.contains("_preview"))
+        {
+            if let Some((stem, ext)) = fname.rsplit_once('.') {
+                if ext.eq_ignore_ascii_case("png")
+                    && !stem.ends_with("_glow")
+                    && !mesh_rows.contains_key(stem)
+                {
+                    mesh_rows.insert(
+                        stem.to_string(),
+                        MeshCodegenRow {
+                            meta: None,
+                            asset_uri: None,
+                            texture_uri: Some(uri.clone()),
+                            glow_mesh_uri: None,
+                            glow_texture_uri: None,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     // 9-slice metadata from `art/ui/slices.json`, nested `art/ui/*/slices.json`, and
@@ -2107,45 +2195,40 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         out.push_str("AssetIds.meshes = {\n");
         for (k, row) in &mesh_rows {
             let key_s = luau_str(k);
-            match (&row.meta, &row.asset_uri) {
-                (Some((sz, tris)), None) => {
-                    out.push_str(&format!(
-                        "\t[{key_s}] = {{ size = Vector3.new({:.3}, {:.3}, {:.3}), tris = {} }},\n",
-                        sz[0], sz[1], sz[2], tris
-                    ));
+            let mut fields: Vec<String> = Vec::new();
+            if let Some((sz, tris)) = row.meta {
+                fields.push(format!("size = Vector3.new({:.3}, {:.3}, {:.3})", sz[0], sz[1], sz[2]));
+                fields.push(format!("tris = {tris}"));
+            }
+            if let Some(uri) = &row.asset_uri {
+                let s = luau_str(uri);
+                fields.push(format!("assetId = {s}"));
+                fields.push(format!("meshId = {s}"));
+            }
+            if let Some(tex) = &row.texture_uri {
+                fields.push(format!("textureId = {}", luau_str(tex)));
+            }
+            if let Some(gm) = &row.glow_mesh_uri {
+                fields.push(format!("glowMeshId = {}", luau_str(gm)));
+            }
+            if let Some(gt) = &row.glow_texture_uri {
+                fields.push(format!("glowTextureId = {}", luau_str(gt)));
+            }
+            if fields.is_empty() {
+                continue;
+            }
+            let single = format!("\t[{key_s}] = {{ {} }},", fields.join(", "));
+            // Respect stylua.toml column_width = 120 (tab = 4 columns).
+            let visual_cols = single.len() + 3;
+            if visual_cols <= 120 {
+                out.push_str(&single);
+                out.push('\n');
+            } else {
+                out.push_str(&format!("\t[{key_s}] = {{\n"));
+                for f in fields {
+                    out.push_str(&format!("\t\t{f},\n"));
                 }
-                (Some((sz, tris)), Some(uri)) => {
-                    let single = format!(
-                        "\t[{key_s}] = {{ size = Vector3.new({:.3}, {:.3}, {:.3}), tris = {}, assetId = {} }},",
-                        sz[0],
-                        sz[1],
-                        sz[2],
-                        tris,
-                        luau_str(uri)
-                    );
-                    // Respect stylua.toml column_width = 120 (tab = 4 columns).
-                    let visual_cols = single.len() + 3;
-                    if visual_cols <= 120 {
-                        out.push_str(&single);
-                        out.push('\n');
-                    } else {
-                        out.push_str(&format!(
-                            "\t[{key_s}] = {{\n\t\tsize = Vector3.new({:.3}, {:.3}, {:.3}),\n\t\ttris = {},\n\t\tassetId = {},\n\t}},\n",
-                            sz[0],
-                            sz[1],
-                            sz[2],
-                            tris,
-                            luau_str(uri)
-                        ));
-                    }
-                }
-                (None, Some(uri)) => {
-                    out.push_str(&format!(
-                        "\t[{key_s}] = {{ assetId = {} }},\n",
-                        luau_str(uri)
-                    ));
-                }
-                (None, None) => {}
+                out.push_str("\t},\n");
             }
         }
         out.push_str("}\n\n");

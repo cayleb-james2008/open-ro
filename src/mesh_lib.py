@@ -13,6 +13,7 @@ import json
 import math
 import os
 import signal
+import struct
 import sys
 
 import bmesh
@@ -93,6 +94,72 @@ def material_for(hexcol):
     _, bsdf = ensure_principled(m)
     bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
     return m
+
+
+def make_stone_material(name, base_hex, crevice_hex="#151b32", noise_scale=5.5, roughness=0.78):
+    """Procedural Cycles stone/temple material with Voronoi masonry cracks & Noise grain."""
+    if name in bpy.data.materials:
+        return bpy.data.materials[name]
+    r1, g1, b1 = (srgb_to_linear(v) for v in parse_hex(base_hex))
+    r0, g0, b0 = (srgb_to_linear(v) for v in parse_hex(crevice_hex))
+    m = bpy.data.materials.new(name)
+    nt, bsdf = ensure_principled(m)
+    bsdf.inputs["Roughness"].default_value = roughness
+    tex = nt.nodes.new("ShaderNodeTexCoord")
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = float(noise_scale)
+    noise.inputs["Detail"].default_value = 6.0
+    noise.inputs["Roughness"].default_value = 0.65
+    vor = nt.nodes.new("ShaderNodeTexVoronoi")
+    vor.feature = "DISTANCE_TO_EDGE"
+    vor.inputs["Scale"].default_value = float(noise_scale) * 0.45
+    mix_f = nt.nodes.new("ShaderNodeMath")
+    mix_f.operation = "MULTIPLY"
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = 0.08
+    ramp.color_ramp.elements[0].color = (r0, g0, b0, 1.0)
+    ramp.color_ramp.elements[1].position = 0.62
+    ramp.color_ramp.elements[1].color = (r1, g1, b1, 1.0)
+    nt.links.new(tex.outputs["Object"], noise.inputs["Vector"])
+    nt.links.new(tex.outputs["Object"], vor.inputs["Vector"])
+    nt.links.new(noise.outputs["Fac"], mix_f.inputs[0])
+    nt.links.new(vor.outputs["Distance"], mix_f.inputs[1])
+    nt.links.new(mix_f.outputs["Value"], ramp.inputs["Fac"])
+    nt.links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+    return m
+
+
+def make_metallic_material(name, base_hex, dark_hex="#181e2c", roughness=0.35):
+    if name in bpy.data.materials:
+        return bpy.data.materials[name]
+    m = make_stone_material(name, base_hex, dark_hex, noise_scale=9.0, roughness=roughness)
+    _, bsdf = ensure_principled(m)
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.45
+    return m
+
+
+def make_glow_material(name, hex_col, strength=3.0):
+    if name in bpy.data.materials:
+        return bpy.data.materials[name]
+    r, g, b = (srgb_to_linear(v) for v in parse_hex(hex_col))
+    m = bpy.data.materials.new(name)
+    _, bsdf = ensure_principled(m)
+    bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
+    if "Emission Color" in bsdf.inputs:
+        bsdf.inputs["Emission Color"].default_value = (r, g, b, 1.0)
+        bsdf.inputs["Emission Strength"].default_value = float(strength)
+    return m
+
+
+def bevel_obj(ob, width=0.06, segments=2):
+    mod = ob.modifiers.new("Bevel", "BEVEL")
+    mod.width = float(width)
+    mod.segments = int(segments)
+    mod.limit_method = "ANGLE"
+    mod.angle_limit = math.radians(32)
+    mod.use_clamp_overlap = True
+    return mod
 
 
 # ---------------------------------------------------------------- structured parts
@@ -367,6 +434,88 @@ def export_obj(ob, path):
     )
 
 
+def export_roblox_mesh_v2(ob, path):
+    """Export Y-up triangulated mesh in native Roblox binary FileMesh version 2.00 format (36B vertices)."""
+    dg = bpy.context.evaluated_depsgraph_get()
+    me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
+    me.transform(ob.matrix_world)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(me)
+    bm.free()
+    me.calc_loop_triangles()
+    uv_layer = me.uv_layers.active.data if me.uv_layers.active else None
+
+    verts_blob = bytearray()
+    faces_blob = bytearray()
+    vert_map = {}
+    vert_count = 0
+    face_count = 0
+
+    for tri in me.loop_triangles:
+        f_idx = []
+        nrm_f = tri.normal
+        for k in range(3):
+            li = tri.loops[k]
+            vi = tri.vertices[k]
+            co = me.vertices[vi].co
+            vno = me.vertices[vi].normal if tri.use_smooth else nrm_f
+            # Y-up conversion matching export_obj (-Z forward, +Y up): (x, z, -y)
+            px, py, pz = float(co.x), float(co.z), float(-co.y)
+            nx, ny, nz = float(vno.x), float(vno.z), float(-vno.y)
+            nlen = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+            nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
+            if uv_layer is not None:
+                uv = uv_layer[li].uv
+                tu, tv = float(uv.x), float(1.0 - uv.y)
+            else:
+                tu, tv = 0.0, 0.0
+            key = (
+                round(px, 5), round(py, 5), round(pz, 5),
+                round(nx, 4), round(ny, 4), round(nz, 4),
+                round(tu, 5), round(tv, 5),
+            )
+            idx = vert_map.get(key)
+            if idx is None:
+                idx = vert_count
+                vert_map[key] = idx
+                vert_count += 1
+                verts_blob.extend(struct.pack(
+                    "<8f4b",
+                    px, py, pz,
+                    nx, ny, nz,
+                    tu, tv,
+                    127, 0, 0, 127,
+                ))
+            f_idx.append(idx)
+        # Swap winding to keep front-facing outward normals under Y-up coordinate mirror
+        faces_blob.extend(struct.pack("<3I", f_idx[0], f_idx[1], f_idx[2]))
+        face_count += 1
+
+    bpy.data.meshes.remove(me)
+    header = b"version 2.00\n" + struct.pack("<HBBII", 12, 36, 12, vert_count, face_count)
+    with open(path, "wb") as fh:
+        fh.write(header)
+        fh.write(verts_blob)
+        fh.write(faces_blob)
+
+
+def export_glb(ob, path):
+    try:
+        select_only(ob)
+        bpy.ops.export_scene.gltf(
+            filepath=path,
+            export_format="GLB",
+            use_selection=True,
+            export_yup=True,
+            export_materials="NONE",
+        )
+        return os.path.isfile(path)
+    except Exception:
+        return False
+
+
 def bounds(obs):
     pts = np.concatenate([
         np.array([(o.matrix_world @ Vector(c))[:] for c in o.bound_box]) for o in obs
@@ -483,6 +632,10 @@ def main(spec, out_dir):
         "Euler": Euler,
         "add_part": builder.add_part,
         "material_for": material_for,
+        "make_stone_material": make_stone_material,
+        "make_metallic_material": make_metallic_material,
+        "make_glow_material": make_glow_material,
+        "bevel_obj": bevel_obj,
         "__name__": "openro_script",
     }
     for p in spec.get("parts") or []:
@@ -515,9 +668,13 @@ def main(spec, out_dir):
         unwrap(o)
     ao_strength = float(spec.get("ao_strength", 0.75))
     tex = {}
+    has_glb = False
+    has_glow_glb = False
     if solid:
         tex["solid"] = bake(solid, os.path.join(out_dir, name + ".png"), size, ao_strength, 24)
         export_obj(solid, os.path.join(out_dir, name + ".obj"))
+        export_roblox_mesh_v2(solid, os.path.join(out_dir, name + ".mesh"))
+        has_glb = export_glb(solid, os.path.join(out_dir, name + ".glb"))
     if glow:
         tex["glow"] = bake(
             glow,
@@ -528,6 +685,8 @@ def main(spec, out_dir):
             with_ao=False,
         )
         export_obj(glow, os.path.join(out_dir, name + "_glow.obj"))
+        export_roblox_mesh_v2(glow, os.path.join(out_dir, name + "_glow.mesh"))
+        has_glow_glb = export_glb(glow, os.path.join(out_dir, name + "_glow.glb"))
     lo, hi = bounds(obs)
     previews = []
     if spec.get("preview", True):
@@ -556,8 +715,12 @@ def main(spec, out_dir):
         "units": "studs",
         "up_axis": "Y",
         "mesh": name + ".obj" if solid else None,
+        "roblox_mesh": name + ".mesh" if solid else None,
+        "glb": name + ".glb" if (solid and has_glb) else None,
         "texture": name + ".png" if solid else None,
         "glow_mesh": name + "_glow.obj" if glow else None,
+        "glow_roblox_mesh": name + "_glow.mesh" if glow else None,
+        "glow_glb": name + "_glow.glb" if (glow and has_glow_glb) else None,
         "glow_texture": name + "_glow.png" if glow else None,
         "tris": total_tris,
         "solid_tris": tris,

@@ -213,7 +213,7 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"studio_stage_content\", \"args\": {{\"slug\": \"...?\"}}}} stages local project PNG/audio into Studio's local content dir (`rbxasset://openro/<slug>/...`) for instant preview before Open Cloud moderation\n\
 - {{\"tool\": \"studio_verify_device\", \"args\": {{\"profile\": \"desktop_1920x1080|tablet_1024x768|phone_844x390\", \"capture_screenshot\": true}}}} runs live Studio PlayerGui layout/touch-target/overflow/overlap verification (fails closed when Studio is disconnected)\n\
 - {{\"tool\": \"studio_verify_audio\", \"args\": {{}}}} runs offline RIFF/WAVE PCM checks plus live Studio `ContentProvider:PreloadAsync` & `Sound.IsLoaded` verification (fails closed when Studio is disconnected)\n\
-- {{\"tool\": \"studio_verify_ui_craft\", \"args\": {{\"offline\": false}}}} verifies the 9 UI Craft Rules live: Client PlayerGui probe counting ui_images_bound, slice_chrome_active (ScaleType.Slice), opaque_parent_violations (SliceChrome/PanelChrome/RarityBorder/TitleRibbon under parents with BackgroundTransparency < 0.85), image_backed_buttons vs bare_buttons, and panel_coverage_pct (passes at >=6 images, >=4 slice chrome, 0 violations, >=65% coverage); with Studio disconnected it runs an offline static audit of art/ui/slices.json + src/**/*.luau flagged mode offline_fallback (passed=false) and writes ops/ui/studio-ui-craft-verify.json\n\
+- {{\"tool\": \"studio_verify_ui_craft\", \"args\": {{\"offline\": false}}}} verifies the 10 UI Craft Rules live: Client PlayerGui probe counting ui_images_bound, slice_chrome_active (ScaleType.Slice), opaque_parent_violations (SliceChrome/PanelChrome/RarityBorder/TitleRibbon under parents with BackgroundTransparency < 0.85), image_backed_buttons vs bare_buttons, and panel_coverage_pct (passes at >=6 images, >=4 slice chrome, 0 violations, >=65% coverage); with Studio disconnected it runs an offline static audit of art/ui/slices.json + src/**/*.luau flagged mode offline_fallback (passed=false) and writes ops/ui/studio-ui-craft-verify.json\n\
 \nStudio-Native First WORKFLOW:\n\
 - Push native Luau scripts, ScreenGuis, and instances directly into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
 - Use `studio_cua_*` (`studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`) over the headed/embedded Studio window for any native Studio UI or dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs).\n\
@@ -247,9 +247,10 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"art_generate\", \"args\": {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [\"art/references/...\"]}}}} generates art (ChatGPT shared browser default; never Higgsfield)\n\
 - {{\"tool\": \"image_process\", \"args\": {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}}}} crops/resizes/composites/removes background on PNGs\n\
 - {{\"tool\": \"art_pack_card\", \"args\": {{\"card_id\": \"...\"}}}} packs card art/icon/full variants + contact sheet\n\
-- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 9 UI Craft rules, 4 mixable layouts, 5 visual skins, and 5 UI sheet recipes\n\
-- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|panels_sheet|icons_sheet|rarity_frames_sheet|card_borders_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
-- {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
+- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 10 UI Craft rules, 4 mixable layouts, 6 visual skins (incl. `anime-pop-dark`), and 6 UI sheet recipes (incl. `cartoon_icons_sheet`)\n\
+- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"anime-pop-dark|obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|panels_sheet|icons_sheet|cartoon_icons_sheet|rarity_frames_sheet|card_borders_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
+- {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .mesh + .obj + .glb + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
+- {{\"tool\": \"blender_build_map\", \"args\": {{\"preset\": \"arcane-dungeon-sanctum\"}}}} builds a complete 5-prop Blender 3D architecture kit (.mesh/.obj/.glb/PNG) + checkered arcane floor PNG + map_kit.json + AssetIds.meshes codegen\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
 - {{\"tool\": \"sfx_pack_list\", \"args\": {{}}}} / {{\"tool\": \"sfx_pack_install\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\"}}}} / {{\"tool\": \"sfx_pack_search\", \"args\": {{\"query\": \"click\", \"pack_id\": \"...?\", \"limit\": 20}}}} / {{\"tool\": \"sfx_pack_use\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\", \"clip\": \"...\", \"out_name\": \"ui_click\"}}}} browses, installs, searches, and masters free SFX clips (trending Modern UI / motion-graphics packs first) into 44.1kHz WAV in assets/audio/\n\
 - {{\"tool\": \"music_search\", \"args\": {{\"genre\": \"jazz-rap|lofi|trap|carti-type-beat|pluggnb|anime-hiphop|synthwave\", \"query\": \"...?\", \"limit\": 10}}}} / {{\"tool\": \"music_import\", \"args\": {{\"url\": \"https://www.youtube.com/watch?v=<id>\", \"genre\": \"lofi\", \"out_name\": \"lobby_music\", \"max_duration_s\": 90}}}} sources copyright-free YouTube background music (zero dubstep) and masters a loop-ready 44.1kHz mono WAV + .source.json credit receipt in assets/audio/; use this for BGM instead of synthesized/oscillator music\n\
@@ -316,8 +317,8 @@ Studio-Native First & LIVE CUA TOOLS:\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - research_roblox_game {{target}} / web_search {{query,limit}} / web_fetch {{url}} / reference_search {{query,character,show}}\n\
 - art_generate {{prompt,out_path,references}} (ChatGPT default; never Higgsfield) / image_process {{input,output,ops}} / art_pack_card {{card_id}}\n\
-- ui_kit_presets {{}} / ui_kit_generate {{layout:\"skybridge-crest\",skin:\"obsidian-prism\",sheet:\"chrome_sheet|panels_sheet\"}} (UI Craft (9 Rules): generate chrome_sheet+panels_sheet [modal_glass,title_ribbon,tab_active,tab_inactive,btn_emerald,btn_gold,dock_tile,inspector_card]+icons_sheet+card_borders_sheet; bind >=70% sliced PNGs w/ BackgroundTransparency=1 & dense grids; verify via studio_verify_ui_craft)\n\
-- mesh_generate {{name,description,script}} / audio_generate {{name,preset,recipe,duration_ms}} / sfx_pack_list|install|search|use / music_search|import (copyright-free BGM)\n\
+- ui_kit_presets {{}} / ui_kit_generate {{layout:\"skybridge-crest\",skin:\"anime-pop-dark\",sheet:\"chrome_sheet|panels_sheet|cartoon_icons_sheet\"}} (UI Craft (10 Rules): generate panels_sheet+cartoon_icons_sheet+card_borders_sheet; bind >=70% sliced PNGs w/ BackgroundTransparency=1 & dense grids; verify via studio_verify_ui_craft)\n\
+- mesh_generate {{name,description,script}} / blender_build_map {{preset:\"arcane-dungeon-sanctum\"}} / audio_generate {{name,preset,recipe,duration_ms}} / sfx_pack_list|install|search|use / music_search|import (copyright-free BGM) / OSS tools via adapter_invoke (blender-mcp-oss, luau-lsp-cli, darklua-cli, asphalt-cli, rokit-cli)\n\
 - adapter_list {{\"capability\":\"...?\"}} / adapter_invoke {{\"capability\":\"...\",\"adapter_id\":\"...?\",\"params\":{{...}}}}\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\":true,\"save_creator\":true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
 - assets_authorise {{\"paths\":[...]}} / assets_upload {{\"paths\":[...],\"max_audio_uploads\":5}} / assets_moderation_poll {{}} / assets_codegen {{\"studio_local_fallback\":true}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
@@ -548,6 +549,7 @@ pub struct AgentHooks {
     pub ui_kit_presets: Option<HookFn>,
     pub ui_kit_generate: Option<HookFn>,
     pub mesh_generate: Option<HookFn>,
+    pub blender_build_map: Option<HookFn>,
     pub audio_generate: Option<HookFn>,
     pub sfx_pack_list: Option<HookFn>,
     pub sfx_pack_install: Option<HookFn>,
@@ -3092,6 +3094,7 @@ impl Agent {
                                         | "ui_kit_generate"
                                         | "mesh_generate"
                                         | "blender_generate"
+                                        | "blender_build_map"
                                         | "audio_generate"
                                         | "sfx_pack_install"
                                         | "sfx_pack_use"
@@ -3574,6 +3577,7 @@ impl Agent {
                                 | "ui_kit_generate"
                                 | "mesh_generate"
                                 | "blender_generate"
+                                | "blender_build_map"
                                 | "audio_generate"
                                 | "sfx_pack_install"
                                 | "sfx_pack_use"
@@ -5270,6 +5274,25 @@ impl Agent {
                 transcript.push(format!("tool {tool} -> {text}"));
                 thread.push(format!("Generated 3D mesh {name}."));
                 Ok(format!("tool_result: {tool}: {text}"))
+            }
+            "blender_build_map" => {
+                let res = if let Some(hook) = &self.hooks.blender_build_map {
+                    hook(args)?
+                } else {
+                    let root = self
+                        .effective_project_root()
+                        .unwrap_or_else(|| self.effective_assets_root());
+                    let data_dir = self.effective_assets_root();
+                    crate::mesh::build_map_kit(&data_dir, Some(&root), args, None)?
+                };
+                let text = res.to_string();
+                let preset = res
+                    .get("preset")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("arcane-dungeon-sanctum");
+                transcript.push(format!("tool blender_build_map -> {text}"));
+                thread.push(format!("Generated Blender 3D map kit {preset}."));
+                Ok(format!("tool_result: blender_build_map: {text}"))
             }
             "audio_generate" => {
                 let res = if let Some(hook) = &self.hooks.audio_generate {
