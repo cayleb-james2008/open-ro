@@ -55,7 +55,13 @@ import {
   type MarketTasteResearchResult,
   type MarketTasteSnapshot,
 } from "./marketTaste";
-import { call, enc } from "./ship/api";
+import {
+  call,
+  enc,
+  runProjectTeardown,
+  teardownScreenshotPreviewUrl,
+  type TeardownReport,
+} from "./ship/api";
 import { AdaptersPanel } from "./AdaptersPanel";
 import { MusicSourcingSection } from "./MusicSourcingSection";
 
@@ -128,6 +134,69 @@ export type AudioRunnerInstallResponse = {
   install_hint?: string;
   error?: string;
 };
+
+const TEARDOWN_PILLARS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "core_loop", label: "Core Loop" },
+  { key: "first_60s_onboarding", label: "First 60s Onboarding" },
+  { key: "screens_and_copy_density", label: "Screens & Copy Density" },
+  { key: "economy_and_monetization", label: "Economy & Monetization" },
+  { key: "world_3d_and_props", label: "3D World & Props" },
+  { key: "audio_sfx_mood", label: "Audio & SFX Mood" },
+  { key: "retention_hooks", label: "Retention Hooks" },
+];
+
+function summarizeTeardownPillar(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(" · ");
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const primary = obj.summary ?? obj.goal ?? obj.description ?? obj.notes ?? obj.loop;
+    if (typeof primary === "string" && primary.trim()) return primary.trim();
+    const parts = Object.entries(obj)
+      .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+      .slice(0, 3)
+      .map(([k, v]) => `${k.replace(/_/g, " ")}: ${String(v)}`);
+    if (parts.length > 0) return parts.join(" · ");
+    const arrayParts = Object.values(obj)
+      .flatMap((v) => (Array.isArray(v) ? v : []))
+      .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      .slice(0, 3);
+    if (arrayParts.length > 0) return arrayParts.join(" · ");
+  }
+  return "Captured in teardown spec";
+}
+
+function formatTeardownEntries(
+  block: { videos?: Array<{ title?: string; channel?: string }>; pages?: Array<{ title?: string; snippet?: string }>; findings?: string[]; summary?: string } | undefined,
+): string[] {
+  if (!block) return [];
+  const lines: string[] = [];
+  if (typeof block.summary === "string" && block.summary.trim()) {
+    lines.push(block.summary.trim());
+  }
+  if (Array.isArray(block.findings)) {
+    for (const f of block.findings) {
+      if (typeof f === "string" && f.trim()) lines.push(f.trim());
+    }
+  }
+  if (Array.isArray(block.videos)) {
+    for (const v of block.videos) {
+      if (v?.title) lines.push(v.channel ? `${v.title} (${v.channel})` : v.title);
+    }
+  }
+  if (Array.isArray(block.pages)) {
+    for (const p of block.pages) {
+      if (p?.title) lines.push(p.snippet ? `${p.title}: ${p.snippet.slice(0, 120)}` : p.title);
+    }
+  }
+  return lines.slice(0, 5);
+}
 
 const AUDIO_MODEL_TIERS = [
   { tier: "Tiny CPU ~185M", detail: "AudioLDM-S local neural SFX (4GB RAM)" },
@@ -976,6 +1045,14 @@ export function ToolLibraryDialog({
   const [researchQuery, setResearchQuery] = useState("");
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchRes, setResearchRes] = useState<MarketTasteResearchResult | null>(null);
+  const [teardownBusy, setTeardownBusy] = useState(false);
+  const [teardownRes, setTeardownRes] = useState<TeardownReport | null>(null);
+  const [teardownError, setTeardownError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTeardownError(null);
+    setTeardownRes(null);
+  }, [projectId]);
 
   const defaultPacks = snapshot.packs.filter((p) => p.default_installed);
   const installablePacks = snapshot.packs.filter((p) => !p.default_installed);
@@ -1010,6 +1087,42 @@ export function ToolLibraryDialog({
       toast.error("Could not reach /api/market-taste/research.");
     } finally {
       setResearchBusy(false);
+    }
+  };
+
+  const handleLiveTeardown = async (overrideQuery?: string) => {
+    if (!projectId) {
+      setTeardownError("Open or create an active project first to run Live Teardown.");
+      return;
+    }
+    const q = (overrideQuery ?? researchQuery).trim();
+    if (!q) {
+      setTeardownError("Enter a Roblox game URL, Place ID, or Universe ID first.");
+      return;
+    }
+    if (teardownBusy) return;
+    setTeardownError(null);
+    setTeardownBusy(true);
+    try {
+      const res = await runProjectTeardown(projectId, {
+        target: q,
+        include_youtube: true,
+        include_wiki: true,
+      });
+      if (res.ok) {
+        setTeardownRes(res);
+        toast.success(`Live Teardown ready for ${res.game?.name || q}`);
+      } else {
+        const msg = res.error || "Could not complete Live Teardown.";
+        setTeardownError(msg);
+        toast.error(msg);
+      }
+    } catch {
+      const msg = "Could not reach project teardown endpoint.";
+      setTeardownError(msg);
+      toast.error(msg);
+    } finally {
+      setTeardownBusy(false);
     }
   };
 
@@ -1378,7 +1491,7 @@ export function ToolLibraryDialog({
                       <Button
                         variant="default"
                         size="sm"
-                        disabled={researchBusy}
+                        disabled={researchBusy || teardownBusy}
                         aria-label="Research Roblox Game"
                         onClick={() => void handleResearchGame()}
                         className="max-md:min-h-11"
@@ -1386,7 +1499,175 @@ export function ToolLibraryDialog({
                         <Wand2 className="size-3.5" strokeWidth={1.5} aria-hidden />
                         {researchBusy ? "Researching…" : "Research Game"}
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={teardownBusy || researchBusy}
+                        aria-label="Live Teardown"
+                        data-live-teardown-btn
+                        onClick={() => void handleLiveTeardown()}
+                        className="bg-surface max-md:min-h-11"
+                      >
+                        <Layers className="size-3.5" strokeWidth={1.5} aria-hidden />
+                        {teardownBusy ? "Tearing down…" : "Live Teardown"}
+                      </Button>
                     </div>
+
+                    {teardownError && (
+                      <p
+                        role="alert"
+                        data-teardown-error
+                        className="rounded-sm border border-pill-warn-bg/60 bg-pill-warn-bg/30 px-2.5 py-2 text-xs text-pill-warn-fg"
+                      >
+                        {teardownError}
+                      </p>
+                    )}
+
+                    {teardownRes && teardownRes.ok && (() => {
+                      const badgesCount = Array.isArray(teardownRes.badges) ? teardownRes.badges.length : 0;
+                      const gamePasses = Array.isArray(teardownRes.game_passes) ? teardownRes.game_passes : [];
+                      const screenshots = Array.isArray(teardownRes.screenshots) ? teardownRes.screenshots : [];
+                      const ytLines = formatTeardownEntries(teardownRes.youtube_research);
+                      const wikiLines = formatTeardownEntries(teardownRes.wiki_research);
+                      const specObj =
+                        teardownRes.e2e_spec && typeof teardownRes.e2e_spec === "object"
+                          ? teardownRes.e2e_spec
+                          : null;
+                      return (
+                        <div
+                          data-teardown-result
+                          className="flex flex-col gap-2.5 rounded-sm border border-hairline bg-surface p-3"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-sm font-medium text-ink">
+                                {teardownRes.game?.name || "Live Game Teardown"}
+                              </span>
+                              <Badge className="border-transparent bg-tag-design-bg px-1.5 py-0.5 text-xs text-tag-design-fg">
+                                7-Pillar Teardown
+                              </Badge>
+                              {(teardownRes.universe_id || teardownRes.game?.universe_id) && (
+                                <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
+                                  Universe {teardownRes.universe_id || teardownRes.game?.universe_id}
+                                </Pill>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
+                                {badgesCount} Badges
+                              </Pill>
+                              <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs tabular-nums text-tag-mint-fg">
+                                {gamePasses.length} GamePasses
+                              </Pill>
+                              <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs tabular-nums text-tag-sky-fg">
+                                {screenshots.length} Screenshots
+                              </Pill>
+                            </div>
+                          </div>
+
+                          {gamePasses.length > 0 && (
+                            <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-board/40 p-2.5">
+                              <span className="text-xs font-medium text-ink">GamePasses ({gamePasses.length})</span>
+                              <div className="flex flex-wrap gap-1.5">
+                                {gamePasses.slice(0, 8).map((gp, idx) => {
+                                  const label = gp.displayName || gp.name || `Pass #${idx + 1}`;
+                                  const robux = gp.price ?? gp.priceInRobux;
+                                  return (
+                                    <Pill
+                                      key={`${gp.id ?? label}-${idx}`}
+                                      className="bg-surface px-2 py-0.5 text-xs text-ink"
+                                    >
+                                      <span>{label}</span>
+                                      {typeof robux === "number" && (
+                                        <span className="ml-1 font-mono tabular-nums text-ink-2">{robux} R$</span>
+                                      )}
+                                    </Pill>
+                                  );
+                                })}
+                                {gamePasses.length > 8 && (
+                                  <span className="text-xs text-ink-2">+{gamePasses.length - 8} more</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {screenshots.length > 0 && projectId && (
+                            <div className="flex flex-col gap-1.5">
+                              <span className="text-xs font-medium text-ink">Captured Reference Screenshots</span>
+                              <div data-teardown-screenshots className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                {screenshots.slice(0, 8).map((shot, idx) => (
+                                  <div
+                                    key={`${shot.path}-${idx}`}
+                                    className="flex flex-col gap-1 rounded-sm border border-hairline bg-board/40 p-1"
+                                  >
+                                    <img
+                                      src={teardownScreenshotPreviewUrl(projectId, shot.path)}
+                                      alt={shot.notes || shot.role || `Teardown screenshot ${idx + 1}`}
+                                      className="aspect-video w-full rounded-xs bg-board object-cover"
+                                    />
+                                    <span className="truncate font-mono text-[11px] text-ink-2">
+                                      {shot.role || shot.path.split("/").pop()}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-board/40 p-2.5">
+                              <span className="text-xs font-medium text-ink">YouTube Findings</span>
+                              {ytLines.length > 0 ? (
+                                <ul className="flex list-disc flex-col gap-1 pl-4 text-xs text-ink-2">
+                                  {ytLines.map((line, i) => (
+                                    <li key={`${line.slice(0, 32)}-${i}`}>{line}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="text-xs text-ink-2">No YouTube clips captured for this run.</p>
+                              )}
+                            </div>
+                            <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-board/40 p-2.5">
+                              <span className="text-xs font-medium text-ink">Wiki &amp; Guide Findings</span>
+                              {wikiLines.length > 0 ? (
+                                <ul className="flex list-disc flex-col gap-1 pl-4 text-xs text-ink-2">
+                                  {wikiLines.map((line, i) => (
+                                    <li key={`${line.slice(0, 32)}-${i}`}>{line}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="text-xs text-ink-2">No public wiki pages matched for this run.</p>
+                              )}
+                            </div>
+                          </div>
+
+                          {specObj && (
+                            <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-board/40 p-2.5">
+                              <span className="text-xs font-medium text-ink">7-Pillar E2E Spec Summary</span>
+                              <div className="grid gap-1.5 sm:grid-cols-2">
+                                {TEARDOWN_PILLARS.map(({ key, label }) => {
+                                  if (!(key in specObj)) return null;
+                                  return (
+                                    <div key={key} className="rounded-xs border border-hairline bg-surface px-2 py-1.5">
+                                      <div className="text-xs font-medium text-ink">{label}</div>
+                                      <div className="text-xs leading-snug text-ink-2">
+                                        {summarizeTeardownPillar(specObj[key])}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {teardownRes.teardown_md && (
+                            <p className="text-xs text-ink-2">
+                              Saved teardown: <code className="font-mono">{teardownRes.teardown_md}</code>
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {researchRes && researchRes.ok && (
                       <div

@@ -235,17 +235,19 @@ try {
     return { pr, gen, bordersGen, panelsGen, adp };
   });
   const sheetIds = Array.isArray(uiKitApiRes.pr?.sheets) ? uiKitApiRes.pr.sheets.map((x) => x.id) : [];
+  const skinIds = Array.isArray(uiKitApiRes.pr?.skins) ? uiKitApiRes.pr.skins.map((x) => x.id) : [];
   check(
-    "GET /api/ui-kit/presets returns 10 rules, 4 layouts, 6 skins, 6 sheets (incl. anime-pop-dark, cartoon_icons_sheet, card_borders_sheet & panels_sheet)",
+    "GET /api/ui-kit/presets returns 10 rules, 4 layouts, 7 skins, 6 sheets (incl. anime-pop-dark, meme-pop-arcade, cartoon_icons_sheet, card_borders_sheet & panels_sheet)",
     uiKitApiRes.pr?.ok === true &&
       uiKitApiRes.pr?.craft_rules?.length === 10 &&
       uiKitApiRes.pr?.layouts?.length === 4 &&
-      uiKitApiRes.pr?.skins?.length === 6 &&
+      uiKitApiRes.pr?.skins?.length === 7 &&
+      skinIds.includes("meme-pop-arcade") &&
       uiKitApiRes.pr?.sheets?.length === 6 &&
       sheetIds.includes("card_borders_sheet") &&
       sheetIds.includes("panels_sheet") &&
       sheetIds.includes("cartoon_icons_sheet"),
-    JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length, sheetIds }),
+    JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length, skins: uiKitApiRes.pr?.skins?.length, sheetIds }),
   );
   check(
     "POST /api/studio/ui-kit/generate slices transparent chrome, 7 card_borders_sheet & 8 panels_sheet overlays",

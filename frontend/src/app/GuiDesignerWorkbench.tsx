@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -39,10 +40,12 @@ import type { Place, ProjectAssetRecord } from "./data";
 import {
   call,
   compileGuiScreen,
+  fetchProjectTeardown,
   listGuiScreens,
   loadGuiScreen,
   projUrl,
   saveGuiScreen,
+  teardownScreenshotPreviewUrl,
   type AssetFile,
   type GuiCompileDiagnostic,
   type GuiScreenSummary,
@@ -259,6 +262,16 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   const [uiKitSheet, setUiKitSheet] = useState<UiKitSheetId>("chrome_sheet");
   const [uiKitBusy, setUiKitBusy] = useState(false);
   const [uiKitSliceCount, setUiKitSliceCount] = useState<number | null>(null);
+  const [teardownRefs, setTeardownRefs] = useState<string[]>([]);
+  const [selectedTeardownRefs, setSelectedTeardownRefs] = useState<string[]>([]);
+  const [useTeardownReference, setUseTeardownReference] = useState(true);
+  const [variantTheme, setVariantTheme] = useState("");
+  const [uiKitVariantFeedback, setUiKitVariantFeedback] = useState<{
+    variantMode?: string;
+    referenceCount: number;
+    referenceGuided?: boolean;
+  } | null>(null);
+  const useTeardownCheckboxId = useId();
 
   const stageWrapRef = useRef<HTMLDivElement>(null);
   const [stageWidth, setStageWidth] = useState(640);
@@ -321,8 +334,29 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
         if (aRes.ok && Array.isArray(aRes.files)) {
           setProjectArtFiles(aRes.files);
         }
+        const tdRes = await fetchProjectTeardown(projectId);
+        if (tdRes.ok) {
+          const rec = Array.isArray(tdRes.recommended_ui_reference_screenshots)
+            ? tdRes.recommended_ui_reference_screenshots.filter(
+                (p): p is string => typeof p === "string" && p.trim().length > 0,
+              )
+            : [];
+          const fallbackShots = Array.isArray(tdRes.screenshots)
+            ? tdRes.screenshots
+                .map((s) => (s && typeof s.path === "string" ? s.path.trim() : ""))
+                .filter(Boolean)
+            : [];
+          const refs = Array.from(new Set(rec.length > 0 ? rec : fallbackShots)).slice(0, 6);
+          setTeardownRefs(refs);
+          setSelectedTeardownRefs(refs);
+        } else {
+          setTeardownRefs([]);
+          setSelectedTeardownRefs([]);
+        }
       } else {
         setProjectArtFiles([]);
+        setTeardownRefs([]);
+        setSelectedTeardownRefs([]);
       }
     } catch {
       setGuiError("Failed to refresh UI screens. Using local starter layout.");
@@ -493,13 +527,23 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       const url = projectId
         ? projUrl(projectId, "/ui-kit/generate")
         : "/api/studio/ui-kit/generate";
+      const activeRefs = useTeardownReference
+        ? (selectedTeardownRefs.length > 0 ? selectedTeardownRefs : teardownRefs)
+        : [];
+      const trimmedTheme = variantTheme.trim();
       const res = await call<{
         sliced_count?: number;
         screen_doc?: unknown;
+        variant_mode?: string;
+        reference_images?: string[];
+        reference_guided?: boolean;
       }>(url, {
         layout: uiKitLayout,
         skin: uiKitSkin,
         sheet: uiKitSheet,
+        use_teardown_reference: useTeardownReference,
+        ...(activeRefs.length > 0 ? { reference_screenshots: activeRefs } : {}),
+        ...(trimmedTheme ? { variant_theme: trimmedTheme } : {}),
       });
       if (!res.ok) {
         toast.error(res.error || "Could not generate UI Kit sheet.");
@@ -507,13 +551,22 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       }
       const count = typeof res.sliced_count === "number" ? res.sliced_count : 0;
       setUiKitSliceCount(count);
+      const refImages = Array.isArray(res.reference_images) ? res.reference_images : [];
+      if (res.variant_mode || refImages.length > 0 || res.reference_guided !== undefined) {
+        setUiKitVariantFeedback({
+          variantMode: res.variant_mode,
+          referenceCount: refImages.length,
+          referenceGuided: res.reference_guided,
+        });
+      }
       if (res.screen_doc) {
         const next = normalizeScreenDoc(res.screen_doc, `${uiKitLayout}-${uiKitSkin}`);
         setDoc(next);
         setSelectedNodeId(next.root.children[0]?.id ?? next.root.id);
         setDirty(true);
       }
-      toast.success(`Sliced ${count} UI assets (${uiKitSkin})`);
+      const refSuffix = refImages.length > 0 ? `, ${refImages.length} ref` : "";
+      toast.success(`Sliced ${count} UI assets (${uiKitSkin}${refSuffix})`);
       await onSavedScreenOrLuau?.();
     } finally {
       setUiKitBusy(false);
@@ -1040,87 +1093,174 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       {/* UI Kit Generator Strip: Mixable Layout Topology + Visual Skin + Asset Sheet */}
       <div
         data-ui-kit-strip
-        className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-surface px-2.5 py-1.5"
+        className="flex flex-col gap-1.5 rounded-card border border-hairline bg-surface px-2.5 py-1.5"
       >
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <span className="flex items-center gap-1 text-xs font-medium text-ink">
-            <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
-            <span>UI Kit</span>
-          </span>
-          <select
-            aria-label="UI Kit layout topology"
-            data-ui-kit-layout
-            value={uiKitLayout}
-            onChange={(e) => {
-              const next = e.target.value as UiKitLayoutId;
-              setUiKitLayout(next);
-              handleApplyUiKitLayout(next, uiKitSkin);
-            }}
-            className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
-          >
-            {UI_KIT_LAYOUT_META.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="UI Kit visual skin"
-            data-ui-kit-skin
-            value={uiKitSkin}
-            onChange={(e) => {
-              const next = e.target.value as UiKitSkinId;
-              setUiKitSkin(next);
-              handleApplyUiKitLayout(uiKitLayout, next);
-            }}
-            className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
-          >
-            {UI_KIT_SKIN_META.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="UI Kit asset sheet"
-            data-ui-kit-sheet
-            value={uiKitSheet}
-            onChange={(e) => setUiKitSheet(e.target.value as UiKitSheetId)}
-            className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
-          >
-            {UI_KIT_SHEET_META.map((sh) => (
-              <option key={sh.id} value={sh.id}>
-                {sh.label}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="flex items-center gap-1 text-xs font-medium text-ink">
+              <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
+              <span>UI Kit</span>
+            </span>
+            <select
+              aria-label="UI Kit layout topology"
+              data-ui-kit-layout
+              value={uiKitLayout}
+              onChange={(e) => {
+                const next = e.target.value as UiKitLayoutId;
+                setUiKitLayout(next);
+                handleApplyUiKitLayout(next, uiKitSkin);
+              }}
+              className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
+            >
+              {UI_KIT_LAYOUT_META.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="UI Kit visual skin"
+              data-ui-kit-skin
+              value={uiKitSkin}
+              onChange={(e) => {
+                const next = e.target.value as UiKitSkinId;
+                setUiKitSkin(next);
+                handleApplyUiKitLayout(uiKitLayout, next);
+              }}
+              className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
+            >
+              {UI_KIT_SKIN_META.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="UI Kit asset sheet"
+              data-ui-kit-sheet
+              value={uiKitSheet}
+              onChange={(e) => setUiKitSheet(e.target.value as UiKitSheetId)}
+              className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
+            >
+              {UI_KIT_SHEET_META.map((sh) => (
+                <option key={sh.id} value={sh.id}>
+                  {sh.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {uiKitSliceCount !== null && (
+              <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+                {uiKitSliceCount} slices
+              </Pill>
+            )}
+            <Button
+              variant="outline"
+              size="xs"
+              data-ui-kit-apply
+              onClick={() => handleApplyUiKitLayout()}
+              className="max-md:min-h-11"
+            >
+              <span>Apply Layout</span>
+            </Button>
+            <Button
+              variant="secondary"
+              size="xs"
+              data-ui-kit-generate
+              loading={uiKitBusy}
+              onClick={() => void handleGenerateUiKitSheet()}
+              className="max-md:min-h-11"
+            >
+              <ImageIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Generate UI Kit Sheet</span>
+            </Button>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {uiKitSliceCount !== null && (
-            <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
-              {uiKitSliceCount} slices
+
+        {/* Reference Variant Strip */}
+        <div
+          data-ui-kit-reference-strip
+          className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-1.5"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {(selectedTeardownRefs.length > 0 || teardownRefs.length > 0) && (
+              <Badge
+                data-ui-kit-reference-badge
+                className="border-transparent bg-tag-design-bg px-2 py-0.5 text-xs text-tag-design-fg"
+              >
+                Reference Variant
+              </Badge>
+            )}
+            <label
+              htmlFor={useTeardownCheckboxId}
+              className="inline-flex min-h-8 cursor-pointer items-center gap-1.5 text-xs text-ink max-md:min-h-11"
+            >
+              <input
+                id={useTeardownCheckboxId}
+                type="checkbox"
+                data-ui-kit-use-teardown
+                checked={useTeardownReference}
+                onChange={(e) => setUseTeardownReference(e.target.checked)}
+                className="size-3.5 accent-blue"
+              />
+              <span>Use teardown screenshots (default)</span>
+            </label>
+            {useTeardownReference && teardownRefs.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Teardown reference screenshots">
+                {teardownRefs.slice(0, 4).map((refPath) => {
+                  const active = selectedTeardownRefs.includes(refPath);
+                  const shortName = refPath.split("/").pop() || refPath;
+                  return (
+                    <button
+                      key={refPath}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() =>
+                        setSelectedTeardownRefs((prev) =>
+                          prev.includes(refPath) ? prev.filter((p) => p !== refPath) : [...prev, refPath],
+                        )
+                      }
+                      className={`inline-flex h-7 items-center gap-1 rounded-sm border px-1.5 font-mono text-xs transition-colors max-md:min-h-11 ${
+                        active
+                          ? "border-blue/60 bg-pill-active-bg text-pill-active-fg"
+                          : "border-hairline bg-board text-ink-2 hover:text-ink"
+                      }`}
+                      title={refPath}
+                    >
+                      {projectId && (
+                        <img
+                          src={teardownScreenshotPreviewUrl(projectId, refPath)}
+                          alt=""
+                          className="size-4 rounded-xs object-cover"
+                        />
+                      )}
+                      <span className="max-w-[96px] truncate">{shortName}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <Input
+              aria-label="Variant twist theme"
+              data-ui-kit-variant-theme
+              value={variantTheme}
+              onChange={(e) => setVariantTheme(e.target.value)}
+              placeholder="Variant twist (e.g. Meme Arcade Pop)"
+              className="h-8 min-w-[200px] max-w-[260px] bg-board text-xs max-md:min-h-11"
+            />
+          </div>
+          {uiKitVariantFeedback && (
+            <Pill
+              data-ui-kit-variant-feedback
+              className="bg-tag-sky-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-sky-fg"
+            >
+              {uiKitVariantFeedback.variantMode ||
+                (uiKitVariantFeedback.referenceGuided ? "reference-variant" : "skin-default")}
+              {" · "}
+              {uiKitVariantFeedback.referenceCount} ref{uiKitVariantFeedback.referenceCount === 1 ? "" : "s"}
             </Pill>
           )}
-          <Button
-            variant="outline"
-            size="xs"
-            data-ui-kit-apply
-            onClick={() => handleApplyUiKitLayout()}
-            className="max-md:min-h-11"
-          >
-            <span>Apply Layout</span>
-          </Button>
-          <Button
-            variant="secondary"
-            size="xs"
-            data-ui-kit-generate
-            loading={uiKitBusy}
-            onClick={() => void handleGenerateUiKitSheet()}
-            className="max-md:min-h-11"
-          >
-            <ImageIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span>Generate UI Kit Sheet</span>
-          </Button>
         </div>
       </div>
 

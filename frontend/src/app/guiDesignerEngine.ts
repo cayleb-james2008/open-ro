@@ -160,7 +160,7 @@ export type SafeAreaWarning = {
 
 export type GuiPresetId = "rpg" | "obby" | "tycoon" | "gacha";
 export type UiKitLayoutId = "skybridge-crest" | "perimeter-command" | "workshop-ribbon" | "compact-mobile-split";
-export type UiKitSkinId = "obsidian-prism" | "skybridge-gilded" | "sakura-lacquer" | "cyber-forge" | "clean-monochrome";
+export type UiKitSkinId = "obsidian-prism" | "skybridge-gilded" | "sakura-lacquer" | "cyber-forge" | "clean-monochrome" | "meme-pop-arcade";
 export type UiKitSheetId = "chrome_sheet" | "icons_sheet" | "rarity_frames_sheet";
 
 export type ComputedNodeRect = {
@@ -1483,6 +1483,7 @@ export const UI_KIT_SKIN_META: Array<{
   { id: "sakura-lacquer", label: "Sakura Lacquer", surface: "#120B14", elevated: "#1F1424", text: "#FDF2F8", muted: "#E2C6D8", accent: "#F472B6", accentFg: "#120B14", rim: "#F472B6", stroke: "#09050B", crestFill: "#2A1A30", crestTrim: "#F9A8D4" },
   { id: "cyber-forge", label: "Cyber Forge", surface: "#090F12", elevated: "#111D22", text: "#ECFDF5", muted: "#A7F3D0", accent: "#2DD4BF", accentFg: "#090F12", rim: "#14B8A6", stroke: "#04080A", crestFill: "#152830", crestTrim: "#5EEAD4" },
   { id: "clean-monochrome", label: "Clean Monochrome", surface: "#0A0D14", elevated: "#141923", text: "#F7F8FA", muted: "#B8C0CC", accent: "#E2E8F0", accentFg: "#0A0D14", rim: "#94A3B8", stroke: "#05070B", crestFill: "#1C2330", crestTrim: "#CBD5E1" },
+  { id: "meme-pop-arcade", label: "Meme Pop Arcade", surface: "#121520", elevated: "#1B2030", text: "#F8FAFC", muted: "#CBD5E1", accent: "#22C55E", accentFg: "#052E16", rim: "#FACC15", stroke: "#000000", crestFill: "#1E293B", crestTrim: "#38BDF8" },
 ];
 
 export const UI_KIT_SHEET_META: Array<{ id: UiKitSheetId; label: string }> = [
