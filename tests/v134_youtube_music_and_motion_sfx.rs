@@ -520,7 +520,11 @@ fn http_music_routes_capabilities_library_and_agent_tools() {
         assert_eq!(v["youtube_music_adapter"], true, "{ep} missing youtube_music_adapter: {v}");
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     }
-    assert_eq!(env!("CARGO_PKG_VERSION"), "1.34.0");
+    let ver: Vec<u64> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert!(ver >= vec![1, 34, 0], "youtube music adapter ships from v1.34.0 onward");
 
     for (method, path) in [
         ("GET", "/api/library/music/genres"),

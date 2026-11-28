@@ -6566,6 +6566,629 @@ pub fn verify_studio_audio(
     Ok(report)
 }
 
+// ---------------------------------------------------------------------------
+// Gap #91: Image-Gen-First UI Craft verification (`studio_verify_ui_craft`).
+// ---------------------------------------------------------------------------
+
+/// Project-relative receipt written by every `studio_verify_ui_craft` run.
+pub const UI_CRAFT_REPORT_REL: &str = "ops/ui/studio-ui-craft-verify.json";
+/// Live gate thresholds: `ui_images_bound >= 6 && slice_chrome_active >= 4 &&
+/// opaque_parent_violations == 0 && panel_coverage_pct >= 65.0`.
+pub const UI_CRAFT_MIN_IMAGES: u64 = 6;
+pub const UI_CRAFT_MIN_SLICE_CHROME: u64 = 4;
+pub const UI_CRAFT_MIN_COVERAGE_PCT: f64 = 65.0;
+/// Child `ImageLabel` names treated as slice chrome whose parent must stay transparent.
+pub const UI_CRAFT_CHROME_NAMES: [&str; 4] = ["SliceChrome", "PanelChrome", "RarityBorder", "TitleRibbon"];
+/// The 8 `panels_sheet` slice names (Gap #91).
+pub const PANELS_SHEET_ITEMS: [&str; 8] = [
+    "modal_glass",
+    "title_ribbon",
+    "tab_active",
+    "tab_inactive",
+    "btn_emerald",
+    "btn_gold",
+    "dock_tile",
+    "inspector_card",
+];
+
+/// Evaluate the UI Craft gate from raw counters.
+pub fn ui_craft_gate(
+    ui_images_bound: u64,
+    slice_chrome_active: u64,
+    opaque_parent_violations: u64,
+    panel_coverage_pct: f64,
+) -> bool {
+    ui_images_bound >= UI_CRAFT_MIN_IMAGES
+        && slice_chrome_active >= UI_CRAFT_MIN_SLICE_CHROME
+        && opaque_parent_violations == 0
+        && panel_coverage_pct >= UI_CRAFT_MIN_COVERAGE_PCT
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+fn coverage_pct(covered: u64, candidates: u64) -> f64 {
+    if candidates == 0 {
+        0.0
+    } else {
+        round1((covered.min(candidates) as f64) * 100.0 / (candidates as f64))
+    }
+}
+
+fn luau_for_verify_ui_craft() -> &'static str {
+    r#"-- openro:v135:verify_ui_craft
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ok, res = pcall(function()
+	local player = Players.LocalPlayer
+	if not player then
+		return { ok = false, error = "Players.LocalPlayer is nil; ensure Studio is in start_play mode" }
+	end
+	local pgui = player:FindFirstChildOfClass("PlayerGui")
+	if not pgui then
+		return { ok = false, error = "LocalPlayer has no PlayerGui" }
+	end
+	local EXCLUDED = { Chat = true, BubbleChat = true, Freecam = true, TouchGui = true }
+	local CHROME = { SliceChrome = true, PanelChrome = true, RarityBorder = true, TitleRibbon = true }
+	local function isRendered(inst)
+		local cur = inst
+		while cur and cur ~= pgui do
+			if cur:IsA("GuiObject") and not cur.Visible then
+				return false
+			end
+			if cur:IsA("LayerCollector") and not cur.Enabled then
+				return false
+			end
+			cur = cur.Parent
+		end
+		return true
+	end
+	local function hasImage(obj)
+		return (obj:IsA("ImageLabel") or obj:IsA("ImageButton")) and type(obj.Image) == "string" and obj.Image ~= ""
+	end
+	local function isChromeImage(obj)
+		return hasImage(obj) and (obj.ScaleType == Enum.ScaleType.Slice or obj.ScaleType == Enum.ScaleType.Stretch)
+	end
+	local function chromeChild(obj)
+		for _, c in ipairs(obj:GetChildren()) do
+			if c:IsA("GuiObject") and c.Visible and isChromeImage(c) then
+				return c
+			end
+		end
+		return nil
+	end
+	local function pathOf(inst)
+		local parts = {}
+		local cur = inst
+		while cur and cur ~= pgui do
+			table.insert(parts, 1, cur.Name)
+			cur = cur.Parent
+		end
+		return "PlayerGui." .. table.concat(parts, ".")
+	end
+	local imagesBound, sliceChrome, imageButtons, bareButtons = 0, 0, 0, 0
+	local candidates, covered = 0, 0
+	local violations, bare, screens = {}, {}, {}
+	for _, sg in ipairs(pgui:GetChildren()) do
+		if sg:IsA("ScreenGui") and sg.Enabled and not EXCLUDED[sg.Name] then
+			table.insert(screens, sg.Name)
+			for _, obj in ipairs(sg:GetDescendants()) do
+				if obj:IsA("GuiObject") and isRendered(obj) then
+					local parent = obj.Parent
+					if hasImage(obj) then
+						imagesBound += 1
+						if obj.ScaleType == Enum.ScaleType.Slice then
+							sliceChrome += 1
+						end
+					end
+					if obj:IsA("ImageLabel") and CHROME[obj.Name] and parent and parent:IsA("GuiObject") then
+						if parent.BackgroundTransparency < 0.85 then
+							table.insert(violations, { path = pathOf(obj), parent = pathOf(parent), parent_background_transparency = parent.BackgroundTransparency })
+						end
+					end
+					local size = obj.AbsoluteSize
+					local bigEnough = size.X >= 24 and size.Y >= 16
+					if obj:IsA("GuiButton") then
+						candidates += 1
+						if hasImage(obj) or chromeChild(obj) then
+							imageButtons += 1
+							covered += 1
+						else
+							bareButtons += 1
+							if #bare < 50 then
+								table.insert(bare, pathOf(obj))
+							end
+						end
+					elseif (obj:IsA("Frame") or obj:IsA("ScrollingFrame") or obj:IsA("CanvasGroup") or obj:IsA("TextLabel")) and bigEnough then
+						local chrome = chromeChild(obj)
+						if chrome or obj.BackgroundTransparency < 1 then
+							candidates += 1
+							if chrome then
+								covered += 1
+							end
+						end
+					elseif obj:IsA("ImageLabel") and isChromeImage(obj) and bigEnough and not CHROME[obj.Name] then
+						local parentHasChrome = parent and parent:IsA("GuiObject") and chromeChild(parent) ~= nil
+						if not parentHasChrome then
+							candidates += 1
+							covered += 1
+						end
+					end
+				end
+			end
+		end
+	end
+	return {
+		ok = true,
+		screen_guis = screens,
+		ui_images_bound = imagesBound,
+		slice_chrome_active = sliceChrome,
+		opaque_parent_violations = #violations,
+		violations = violations,
+		image_backed_buttons = imageButtons,
+		bare_buttons = bareButtons,
+		bare_button_paths = bare,
+		panel_candidates = candidates,
+		panel_covered = covered,
+	}
+end)
+if ok then
+	return "OPENRO_V011:" .. HttpService:JSONEncode(res)
+end
+return "OPENRO_V011:" .. HttpService:JSONEncode({ ok = false, error = tostring(res) })
+"#
+}
+
+fn collect_luau_sources(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, String)>) {
+    const MAX_FILES: usize = 4000;
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    if depth > 16 || out.len() >= MAX_FILES {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        if out.len() >= MAX_FILES {
+            return;
+        }
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let p = e.path();
+        if ft.is_dir() {
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            collect_luau_sources(root, &p, depth + 1, out);
+        } else if ft.is_file() {
+            let is_luau = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("luau") || ext.eq_ignore_ascii_case("lua"));
+            if !is_luau || e.metadata().map(|m| m.len() > MAX_BYTES).unwrap_or(true) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                out.push((projects::rel_display(root, &p), text));
+            }
+        }
+    }
+}
+
+fn load_ui_slice_entries(project_dir: &Path) -> Vec<(String, Value)> {
+    let mut rows: Vec<(String, Value)> = Vec::new();
+    let mut push_doc = |doc_path: &Path, prefix: Option<&str>| {
+        if std::fs::symlink_metadata(doc_path).map(|m| m.file_type().is_symlink()).unwrap_or(true) {
+            return;
+        }
+        let Some(doc) = std::fs::read_to_string(doc_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            return;
+        };
+        let Some(obj) = doc.as_object() else { return };
+        for (k, v) in obj {
+            let key = match prefix {
+                Some(p) if !k.contains('/') => format!("{p}/{k}"),
+                _ => k.clone(),
+            };
+            if !rows.iter().any(|(existing, _)| existing == &key) {
+                rows.push((key, v.clone()));
+            }
+        }
+    };
+    let ui_dir = project_dir.join("art/ui");
+    push_doc(&ui_dir.join("slices.json"), None);
+    if let Ok(rd) = std::fs::read_dir(&ui_dir) {
+        let mut subdirs: Vec<(String, PathBuf)> = rd
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir() && !ft.is_symlink()))
+            .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+            .filter(|(n, _)| !n.starts_with('.'))
+            .collect();
+        subdirs.sort();
+        for (name, path) in subdirs {
+            push_doc(&path.join("slices.json"), Some(&name));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+fn parse_bt_value(rhs: &str) -> Option<f64> {
+    let num: String = rhs
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    num.parse::<f64>().ok()
+}
+
+/// Offline static/asset audit of `art/ui/slices.json` + `src/**/*.luau` (Gap #91).
+/// Counters are static estimates and are ALWAYS reported as `mode: "offline_fallback"`.
+pub fn offline_ui_craft_audit(project_dir: &Path) -> Value {
+    let slice_entries = load_ui_slice_entries(project_dir);
+    let mut slice_rows = Vec::with_capacity(slice_entries.len());
+    let mut valid_slices = 0u64;
+    let mut missing_png = 0u64;
+    for (key, v) in &slice_entries {
+        let rect_ok = v
+            .get("slice")
+            .and_then(Value::as_array)
+            .is_some_and(|a| {
+                a.len() == 4 && {
+                    let n: Vec<i64> = a.iter().map(|x| x.as_i64().unwrap_or(-1)).collect();
+                    n[0] >= 0 && n[1] >= 0 && n[0] < n[2] && n[1] < n[3]
+                }
+            });
+        let rel = v
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|s| s.trim_start_matches("./").replace('\\', "/"))
+            .unwrap_or_else(|| format!("art/ui/{key}.png"));
+        let png_ok = projects::safe_join(project_dir, &rel)
+            .ok()
+            .and_then(|p| std::fs::symlink_metadata(p).ok())
+            .is_some_and(|m| m.is_file());
+        if rect_ok {
+            valid_slices += 1;
+        }
+        if !png_ok {
+            missing_png += 1;
+        }
+        slice_rows.push(json!({ "key": key, "path": rel, "valid_slice": rect_ok, "png_exists": png_ok }));
+    }
+    let panels_present: Vec<&str> = PANELS_SHEET_ITEMS
+        .iter()
+        .copied()
+        .filter(|item| {
+            slice_entries
+                .iter()
+                .any(|(k, _)| k.rsplit('/').next() == Some(*item))
+        })
+        .collect();
+
+    let mut sources = Vec::new();
+    let src_dir = project_dir.join("src");
+    if std::fs::symlink_metadata(&src_dir).is_ok_and(|m| m.is_dir()) {
+        collect_luau_sources(project_dir, &src_dir, 0, &mut sources);
+    }
+
+    let mut ui_images_bound = 0u64;
+    let mut slice_chrome_active = 0u64;
+    let mut stretch_chrome = 0u64;
+    let mut image_backed_buttons = 0u64;
+    let mut text_buttons = 0u64;
+    let mut frames = 0u64;
+    let mut transparent_parent_sets = 0u64;
+    let mut violations: Vec<Value> = Vec::new();
+    let mut files_with_ui = Vec::new();
+    for (rel, text) in &sources {
+        let mut bt: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut chrome_vars: Vec<String> = Vec::new();
+        let mut chrome_parent: Vec<(String, String)> = Vec::new();
+        let mut file_ui = false;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.starts_with("--") {
+                continue;
+            }
+            if line.contains(".Image =")
+                || line.contains(".Image=")
+                || line.starts_with("Image =")
+                || line.starts_with("Image=")
+            {
+                ui_images_bound += 1;
+                file_ui = true;
+            }
+            if line.contains("ScaleType.Slice") {
+                slice_chrome_active += 1;
+                file_ui = true;
+            }
+            if line.contains("ScaleType.Stretch") {
+                stretch_chrome += 1;
+            }
+            if line.contains("Instance.new(\"ImageButton\")") {
+                image_backed_buttons += 1;
+                file_ui = true;
+            }
+            if line.contains("Instance.new(\"TextButton\")") {
+                text_buttons += 1;
+                file_ui = true;
+            }
+            if line.contains("Instance.new(\"Frame\")")
+                || line.contains("Instance.new(\"ScrollingFrame\")")
+                || line.contains("Instance.new(\"CanvasGroup\")")
+            {
+                frames += 1;
+                file_ui = true;
+            }
+            if let Some((lhs, rhs)) = line.split_once(".BackgroundTransparency") {
+                if let Some(val) = rhs.trim_start().strip_prefix('=').and_then(parse_bt_value) {
+                    let var = lhs.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
+                    if !var.is_empty() {
+                        bt.insert(var, val);
+                    }
+                    if val >= 0.999 {
+                        transparent_parent_sets += 1;
+                    }
+                }
+            }
+            if let Some((lhs, rhs)) = line.split_once(".Name") {
+                let rhs = rhs.trim_start();
+                if let Some(rest) = rhs.strip_prefix('=') {
+                    let name = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+                    if UI_CRAFT_CHROME_NAMES.contains(&name) {
+                        let var = lhs.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
+                        if !var.is_empty() {
+                            chrome_vars.push(var);
+                        }
+                    }
+                }
+            }
+            if let Some((lhs, rhs)) = line.split_once(".Parent") {
+                if let Some(rest) = rhs.trim_start().strip_prefix('=') {
+                    let var = lhs.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
+                    let parent: String = rest.trim().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                    if !var.is_empty() && !parent.is_empty() {
+                        chrome_parent.push((var, parent));
+                    }
+                }
+            }
+        }
+        for (var, parent) in &chrome_parent {
+            if !chrome_vars.contains(var) {
+                continue;
+            }
+            if let Some(val) = bt.get(parent) {
+                if *val < 0.85 {
+                    violations.push(json!({
+                        "path": rel,
+                        "chrome_var": var,
+                        "parent_var": parent,
+                        "parent_background_transparency": val,
+                    }));
+                }
+            }
+        }
+        if file_ui {
+            files_with_ui.push(rel.clone());
+        }
+    }
+    let bare_buttons = text_buttons.saturating_sub(slice_chrome_active + stretch_chrome);
+    let candidates = frames + text_buttons + image_backed_buttons;
+    let covered = (slice_chrome_active + stretch_chrome + image_backed_buttons).min(candidates);
+    let panel_coverage_pct = coverage_pct(covered, candidates);
+    let opaque = violations.len() as u64;
+    let static_gate_passed = ui_craft_gate(ui_images_bound, slice_chrome_active, opaque, panel_coverage_pct);
+    json!({
+        "ui_images_bound": ui_images_bound,
+        "slice_chrome_active": slice_chrome_active,
+        "opaque_parent_violations": opaque,
+        "image_backed_buttons": image_backed_buttons,
+        "bare_buttons": bare_buttons,
+        "panel_coverage_pct": panel_coverage_pct,
+        "static_gate_passed": static_gate_passed,
+        "details": {
+            "source": "static_audit",
+            "slices_json_entries": slice_entries.len(),
+            "valid_slice_rects": valid_slices,
+            "slices_missing_png": missing_png,
+            "panels_sheet_items_present": panels_present,
+            "panels_sheet_complete": panels_present.len() == PANELS_SHEET_ITEMS.len(),
+            "slices": slice_rows,
+            "luau_files_scanned": sources.len(),
+            "luau_files_with_ui": files_with_ui,
+            "stretch_chrome": stretch_chrome,
+            "transparent_parent_sets": transparent_parent_sets,
+            "panel_candidates": candidates,
+            "panel_covered": covered,
+            "violations": violations,
+            "note": "Static estimate from art/ui/slices.json + src/**/*.luau; live PlayerGui evidence requires a connected Roblox Studio session with an open place.",
+        },
+    })
+}
+
+fn write_ui_craft_receipt(r: &ProjectRef, report: &Value) -> Result<(), (u16, String)> {
+    let serialized = serde_json::to_string_pretty(report).unwrap_or_default();
+    write_project_bytes_atomic(&r.dir, UI_CRAFT_REPORT_REL, format!("{serialized}\n").as_bytes())
+        .map(|_| ())
+        .map_err(|e| (500, e))
+}
+
+/// Offline-only `studio_verify_ui_craft` run (static audit + receipt). `passed` is ALWAYS
+/// false here: static estimates are never reported as live Studio evidence.
+pub fn verify_ui_craft_offline(r: &ProjectRef, reason: &str) -> Result<Value, (u16, String)> {
+    let audit = offline_ui_craft_audit(&r.dir);
+    let report = json!({
+        "ok": true,
+        "mode": "offline_fallback",
+        "project": r.id,
+        "live_studio_connected": false,
+        "passed": false,
+        "static_gate_passed": audit["static_gate_passed"],
+        "ui_images_bound": audit["ui_images_bound"],
+        "slice_chrome_active": audit["slice_chrome_active"],
+        "opaque_parent_violations": audit["opaque_parent_violations"],
+        "image_backed_buttons": audit["image_backed_buttons"],
+        "bare_buttons": audit["bare_buttons"],
+        "panel_coverage_pct": audit["panel_coverage_pct"],
+        "thresholds": ui_craft_thresholds_json(),
+        "report_path": UI_CRAFT_REPORT_REL,
+        "details": audit["details"],
+        "error": reason,
+        "at": crate::opencloud::now_iso(),
+    });
+    write_ui_craft_receipt(r, &report)?;
+    Ok(report)
+}
+
+fn ui_craft_thresholds_json() -> Value {
+    json!({
+        "ui_images_bound_min": UI_CRAFT_MIN_IMAGES,
+        "slice_chrome_active_min": UI_CRAFT_MIN_SLICE_CHROME,
+        "opaque_parent_violations_max": 0,
+        "panel_coverage_pct_min": UI_CRAFT_MIN_COVERAGE_PCT,
+    })
+}
+
+/// Gap #91: verify Image-Gen-First UI craft. With a connected Studio MCP session and an open
+/// place, runs a Client `execute_luau` probe over visible `PlayerGui` ScreenGuis (excluding
+/// core `Chat`/`BubbleChat`/`Freecam`); otherwise (or with `"offline": true`) runs a static
+/// asset/source audit flagged `mode: "offline_fallback"`. Writes `ops/ui/studio-ui-craft-verify.json`.
+pub fn verify_studio_ui_craft(
+    shared: &Shared,
+    r: &ProjectRef,
+    req: &Value,
+) -> Result<Value, (u16, String)> {
+    let offline = match req.get("offline") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err((400, "'offline' must be a boolean".to_string())),
+    };
+    let settle_ms = match req.get("settle_ms") {
+        None | Some(Value::Null) => 400,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| (400, "'settle_ms' must be a non-negative integer".to_string()))?
+            .min(15_000),
+    };
+    if offline {
+        return verify_ui_craft_offline(r, "offline audit requested (\"offline\": true); live PlayerGui verification skipped.");
+    }
+
+    let live_out: Option<Value> = {
+        let mut guard = shared.agent.lock().unwrap();
+        let mcp_opt = guard.as_mut().and_then(|agent| match agent.studio.as_mut() {
+            Some(crate::place::PlaceBackend::Mcp(m)) => {
+                if m.has_live_studio() && crate::studio_embed::probe_client_place_open(m) {
+                    Some(m)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        });
+        match mcp_opt {
+            None => None,
+            Some(mcp) => {
+                let already_playing = studio_is_playing(mcp);
+                let mut started_play = false;
+                if !already_playing {
+                    mcp.start_stop_play("start_play")
+                        .map_err(|e| (502, format!("could not start Play for studio_verify_ui_craft: {e}")))?;
+                    started_play = true;
+                    if settle_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(settle_ms));
+                    }
+                }
+                let prev_dm = mcp.datamodel_type().to_string();
+                mcp.set_datamodel_type("Client");
+                let luau_res = mcp.execute_luau(luau_for_verify_ui_craft());
+                mcp.set_datamodel_type(&prev_dm);
+                if started_play {
+                    let _ = mcp.start_stop_play("stop");
+                }
+                Some(match luau_res {
+                    Ok(v) => extract_result(&v).unwrap_or_else(|| {
+                        json!({ "ok": false, "error": "Studio answered without a UI craft verification result" })
+                    }),
+                    Err(e) => json!({ "ok": false, "error": e }),
+                })
+            }
+        }
+    };
+
+    let Some(parsed) = live_out else {
+        return verify_ui_craft_offline(
+            r,
+            "Roblox Studio MCP is not connected (or no place is open); ran the offline static audit instead of live PlayerGui verification.",
+        );
+    };
+
+    let luau_ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let num = |k: &str| parsed.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let ui_images_bound = num("ui_images_bound");
+    let slice_chrome_active = num("slice_chrome_active");
+    let opaque_parent_violations = parsed
+        .get("opaque_parent_violations")
+        .and_then(Value::as_u64)
+        .or_else(|| parsed.get("violations").and_then(Value::as_array).map(|a| a.len() as u64))
+        .unwrap_or(0);
+    let image_backed_buttons = num("image_backed_buttons");
+    let bare_buttons = num("bare_buttons");
+    let panel_coverage_pct = match (
+        parsed.get("panel_candidates").and_then(Value::as_u64),
+        parsed.get("panel_covered").and_then(Value::as_u64),
+    ) {
+        (Some(c), Some(cov)) => coverage_pct(cov, c),
+        _ => round1(
+            parsed
+                .get("panel_coverage_pct")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .clamp(0.0, 100.0),
+        ),
+    };
+    let passed = luau_ok
+        && ui_craft_gate(ui_images_bound, slice_chrome_active, opaque_parent_violations, panel_coverage_pct);
+
+    let report = json!({
+        "ok": true,
+        "mode": "live_studio",
+        "project": r.id,
+        "live_studio_connected": true,
+        "passed": passed,
+        "ui_images_bound": ui_images_bound,
+        "slice_chrome_active": slice_chrome_active,
+        "opaque_parent_violations": opaque_parent_violations,
+        "image_backed_buttons": image_backed_buttons,
+        "bare_buttons": bare_buttons,
+        "panel_coverage_pct": panel_coverage_pct,
+        "thresholds": ui_craft_thresholds_json(),
+        "report_path": UI_CRAFT_REPORT_REL,
+        "details": {
+            "source": "live_playergui_probe",
+            "screen_guis": parsed.get("screen_guis").cloned().unwrap_or_else(|| json!([])),
+            "violations": parsed.get("violations").cloned().unwrap_or_else(|| json!([])),
+            "bare_button_paths": parsed.get("bare_button_paths").cloned().unwrap_or_else(|| json!([])),
+            "panel_candidates": parsed.get("panel_candidates").cloned().unwrap_or(Value::Null),
+            "panel_covered": parsed.get("panel_covered").cloned().unwrap_or(Value::Null),
+            "excluded_screen_guis": ["Chat", "BubbleChat", "Freecam", "TouchGui"],
+        },
+        "error": parsed.get("error").cloned().unwrap_or(Value::Null),
+        "at": crate::opencloud::now_iso(),
+    });
+    write_ui_craft_receipt(r, &report)?;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
