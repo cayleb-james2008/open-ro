@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "openro-rs"
-version = "1.36.0"
+version = "1.36.1"
 dependencies = [
  "flate2",
  "rune",

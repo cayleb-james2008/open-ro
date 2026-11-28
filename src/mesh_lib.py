@@ -162,6 +162,12 @@ def bevel_obj(ob, width=0.06, segments=2):
     return mod
 
 
+def assign_material(ob, mat):
+    ob.data.materials.clear()
+    ob.data.materials.append(mat)
+    return ob
+
+
 # ---------------------------------------------------------------- structured parts
 class Builder:
     """Accumulates parts into one solid mesh and one glow mesh (bmesh, no bpy.ops)."""
@@ -636,6 +642,7 @@ def main(spec, out_dir):
         "make_metallic_material": make_metallic_material,
         "make_glow_material": make_glow_material,
         "bevel_obj": bevel_obj,
+        "assign_material": assign_material,
         "__name__": "openro_script",
     }
     for p in spec.get("parts") or []:
